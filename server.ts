@@ -17,16 +17,23 @@ import { calculateLeaderboard } from './src/utils/leaderboard.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isProd = process.env.NODE_ENV === 'production';
-const PORT = Number(process.env.PORT) || 3000;
+// The internal app server always listens on port 3000 (nginx forwards 8080 to 3000)
+const PORT = 3000;
 
 const app = express();
 app.use(express.json());
 
 // Enable CORS and disable caching on API routes
 app.use('/api', (req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  const origin = req.headers.origin;
+  if (origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+  } else {
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept');
   res.header('Cache-Control', 'no-store, no-cache, must-revalidate');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);

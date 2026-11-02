@@ -74,14 +74,20 @@ export const OnlineLobby: React.FC<Props> = ({
 
   // Host configuration state
   const [hostConfig, setHostConfig] = useState<GameConfig>(config);
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
 
   const fetchRooms = async () => {
     setLoadingRooms(true);
     try {
-      const res = await fetch('/api/rooms');
-      const data = await res.json();
-      if (Array.isArray(data.rooms)) {
-        setAvailableRooms(data.rooms);
+      const res = await fetch('/api/rooms', {
+        headers: { 'Accept': 'application/json' },
+        cache: 'no-store'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.rooms)) {
+          setAvailableRooms(data.rooms);
+        }
       }
     } catch (e) {
       console.error('Error fetching rooms', e);
@@ -109,6 +115,7 @@ export const OnlineLobby: React.FC<Props> = ({
     e.preventDefault();
     if (!nickname.trim()) return;
     sounds.playClick();
+    setIsCreatingRoom(true);
     onCreateRoom(
       customRoomCode.trim().toUpperCase(),
       nickname.trim(),
@@ -117,6 +124,7 @@ export const OnlineLobby: React.FC<Props> = ({
       questions,
       isSpectator
     );
+    setTimeout(() => setIsCreatingRoom(false), 3000);
   };
 
   const handleJoinSubmit = (e: React.FormEvent) => {
@@ -151,11 +159,17 @@ export const OnlineLobby: React.FC<Props> = ({
           {/* Header */}
           <div className="flex items-center justify-between border-b border-[#335a49] pb-4">
             <div>
-              <h2 className="text-2xl sm:text-3xl font-display font-bold text-[#f5d547] flex items-center gap-2">
-                <Users className="w-7 h-7" />
-                Mode Multiplayer Online
-              </h2>
-              <p className="text-xs sm:text-sm text-[#a9bdb2]">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-2xl sm:text-3xl font-display font-bold text-[#f5d547] flex items-center gap-2">
+                  <Users className="w-7 h-7" />
+                  Mode Multiplayer Online
+                </h2>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#14261f] text-[#6fd08c] border border-[#335a49]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#6fd08c] animate-pulse"></span>
+                  Server Multiplayer Aktif
+                </span>
+              </div>
+              <p className="text-xs sm:text-sm text-[#a9bdb2] mt-1">
                 Masuk sebagai siswa dengan Nickname dan Kelas untuk bermain bersama secara langsung.
               </p>
             </div>
@@ -389,10 +403,17 @@ export const OnlineLobby: React.FC<Props> = ({
               <div className="pt-3">
                 <button
                   type="submit"
-                  disabled={!nickname.trim()}
-                  className="w-full py-3 rounded-xl bg-[#f5d547] text-[#14261f] font-display font-bold text-base hover:bg-[#fad85e] transition-colors shadow disabled:opacity-50"
+                  disabled={!nickname.trim() || isCreatingRoom}
+                  className="w-full py-3 rounded-xl bg-[#f5d547] text-[#14261f] font-display font-bold text-base hover:bg-[#fad85e] transition-colors shadow disabled:opacity-50 flex items-center justify-center gap-2"
                 >
-                  Buat Room &amp; Buka Lobi Permainan
+                  {isCreatingRoom ? (
+                    <>
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                      <span>Mempersiapkan Room &amp; Lobi...</span>
+                    </>
+                  ) : (
+                    <span>Buat Room &amp; Buka Lobi Permainan</span>
+                  )}
                 </button>
               </div>
             </form>

@@ -21,7 +21,8 @@ import {
   GraduationCap, 
   Sparkles,
   Wifi,
-  WifiOff
+  WifiOff,
+  RefreshCw
 } from 'lucide-react';
 import { sounds } from './utils/sound';
 
@@ -77,12 +78,22 @@ export default function App() {
   // Check Server Health (Ensures status shows "Server Online" reliably)
   useEffect(() => {
     let isMounted = true;
+    let consecutiveFailures = 0;
     const check = async () => {
       const ok = await api.checkHealth();
-      if (isMounted) setServerOnline(ok);
+      if (!isMounted) return;
+      if (ok) {
+        consecutiveFailures = 0;
+        setServerOnline(true);
+      } else {
+        consecutiveFailures++;
+        if (consecutiveFailures >= 5) {
+          setServerOnline(false);
+        }
+      }
     };
     check();
-    const interval = setInterval(check, 3000);
+    const interval = setInterval(check, 6000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -108,12 +119,12 @@ export default function App() {
       };
 
       ws.onclose = () => {
-        // Fallback polling keeps the app fully functional
+        // Fallback polling keeps the app fully functional without spamming retries
         setTimeout(() => {
           if (wsRef.current === ws) {
             connectWebSocket();
           }
-        }, 3000);
+        }, 10000);
       };
 
       ws.onerror = () => {
@@ -457,18 +468,25 @@ export default function App() {
 
         <div className="flex items-center gap-2 sm:gap-4">
           {/* Status Koneksi Online - Aktif & Terverifikasi */}
-          <div className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg bg-[#14261f] border border-[#335a49]">
+          <div className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg bg-[#14261f] border border-[#335a49]">
             {serverOnline ? (
-              <span className="flex items-center gap-1.5 text-[#6fd08c] font-medium">
+              <span className="flex items-center gap-1.5 text-[#6fd08c] font-medium text-xs">
                 <span className="w-2 h-2 rounded-full bg-[#6fd08c] animate-pulse"></span>
                 <Wifi className="w-3.5 h-3.5" />
-                Server Online
+                <span>Server Online</span>
               </span>
             ) : (
-              <span className="flex items-center gap-1.5 text-[#ef6b5b]">
-                <WifiOff className="w-3.5 h-3.5" />
-                Menghubungkan...
-              </span>
+              <button
+                onClick={async () => {
+                  const ok = await api.checkHealth();
+                  setServerOnline(ok);
+                }}
+                className="flex items-center gap-1.5 text-[#f5d547] text-xs hover:text-[#fad85e] transition-colors cursor-pointer"
+                title="Klik untuk menyambungkan kembali"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Sambungkan Ulang</span>
+              </button>
             )}
           </div>
 
