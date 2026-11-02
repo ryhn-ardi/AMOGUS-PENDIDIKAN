@@ -15,9 +15,11 @@ import {
   ShieldAlert, 
   Eye, 
   Sparkles,
-  HelpCircle
+  HelpCircle,
+  Bot
 } from 'lucide-react';
 import { sounds } from '../utils/sound';
+import { api } from '../utils/network';
 
 interface Props {
   ws: WebSocket | null;
@@ -144,6 +146,38 @@ export const OnlineLobby: React.FC<Props> = ({
     if (!chatInput.trim()) return;
     onSendChat(chatInput.trim());
     setChatInput('');
+  };
+
+  const handleAddBot = async () => {
+    if (!onlineRoom) return;
+    sounds.playClick();
+    try {
+      await api.sendAction(onlineRoom.code, 'add_bot', {});
+    } catch (e) {
+      console.error('Failed to add bot', e);
+    }
+  };
+
+  const handleAutoFillBots = async () => {
+    if (!onlineRoom) return;
+    sounds.playClick();
+    try {
+      for (let i = roomPlayers.length; i < 6; i++) {
+        await api.sendAction(onlineRoom.code, 'add_bot', {});
+      }
+    } catch (e) {
+      console.error('Failed to auto-fill bots', e);
+    }
+  };
+
+  const handleClearBots = async () => {
+    if (!onlineRoom) return;
+    sounds.playClick();
+    try {
+      await api.sendAction(onlineRoom.code, 'clear_bots', {});
+    } catch (e) {
+      console.error('Failed to clear bots', e);
+    }
   };
 
   const isHost = myPlayer?.isHost || onlineRoom?.hostId === myPlayer?.id;
@@ -449,22 +483,53 @@ export const OnlineLobby: React.FC<Props> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+              {isHost && (
+                <>
+                  <button
+                    onClick={handleAddBot}
+                    className="px-3 py-2 rounded-xl bg-[#14261f] border border-[#335a49] hover:bg-[#25493b] text-xs font-semibold text-[#f5d547] flex items-center gap-1 transition-colors"
+                    title="Tambah 1 bot siswa latihan"
+                  >
+                    <Bot className="w-3.5 h-3.5" />
+                    + Bot Siswa
+                  </button>
+
+                  <button
+                    onClick={handleAutoFillBots}
+                    className="px-3 py-2 rounded-xl bg-[#14261f] border border-[#335a49] hover:bg-[#25493b] text-xs font-semibold text-[#6fd08c] flex items-center gap-1 transition-colors hidden sm:flex"
+                    title="Isi otomatis sampai 6 pemain"
+                  >
+                    <Users className="w-3.5 h-3.5" />
+                    Isi 6 Siswa
+                  </button>
+
+                  {roomPlayers.some(p => p.isAI) && (
+                    <button
+                      onClick={handleClearBots}
+                      className="px-2.5 py-2 rounded-xl bg-[#14261f] border border-[#ef6b5b]/30 hover:bg-[#ef6b5b]/20 text-xs font-semibold text-[#ef6b5b] transition-colors"
+                      title="Keluarkan semua bot latihan"
+                    >
+                      Hapus Bot
+                    </button>
+                  )}
+                </>
+              )}
+
               <button
                 onClick={onLeaveRoom}
-                className="px-4 py-2 rounded-xl bg-[#14261f] border border-[#335a49] hover:bg-[#25493b] text-xs font-semibold text-[#ef6b5b] transition-colors"
+                className="px-3.5 py-2 rounded-xl bg-[#14261f] border border-[#335a49] hover:bg-[#25493b] text-xs font-semibold text-[#ef6b5b] transition-colors"
               >
-                Keluar Room
+                Keluar
               </button>
 
               {isHost && (
                 <button
                   onClick={onStartGame}
-                  disabled={activePlayers.length < 2}
-                  className="flex-1 sm:flex-none px-6 py-2.5 rounded-xl bg-[#f5d547] text-[#14261f] font-display font-bold text-sm hover:bg-[#fad85e] transition-colors shadow disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+                  className="flex-1 sm:flex-none px-6 py-2.5 rounded-xl bg-[#f5d547] text-[#14261f] font-display font-bold text-sm hover:bg-[#fad85e] hover:scale-105 active:scale-95 transition-all shadow flex items-center justify-center gap-1.5"
                 >
                   <Play className="w-4 h-4 fill-current" />
-                  Mulai Pertandingan
+                  {activePlayers.length < 2 ? 'Mulai (+Isi Bot Otomatis)' : 'Mulai Pertandingan'}
                 </button>
               )}
             </div>
@@ -486,9 +551,17 @@ export const OnlineLobby: React.FC<Props> = ({
               </div>
 
               {activePlayers.length < 2 && (
-                <div className="p-3 bg-[#f5d547]/10 border border-[#f5d547]/30 rounded-xl text-xs text-[#f5d547] flex items-center gap-2">
-                  <HelpCircle className="w-4 h-4 shrink-0" />
-                  <span>Menunggu minimal 1 siswa lagi untuk bergabung sebelum dapat memulai permainan.</span>
+                <div className="p-3 bg-[#f5d547]/10 border border-[#f5d547]/30 rounded-xl text-xs text-[#f5d547] flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <HelpCircle className="w-4 h-4 shrink-0" />
+                    <span>Anda bisa mengajak teman bergabung dengan kode di atas, atau klik <strong>+ Bot Siswa</strong> untuk langsung menguji permainan.</span>
+                  </div>
+                  <button
+                    onClick={handleAddBot}
+                    className="px-2.5 py-1 rounded-lg bg-[#f5d547] text-[#14261f] font-bold text-xs shrink-0"
+                  >
+                    + Tambah Bot
+                  </button>
                 </div>
               )}
 

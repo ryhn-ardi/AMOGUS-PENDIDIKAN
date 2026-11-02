@@ -165,28 +165,32 @@ function checkRoomVictory(room: RoomState): MatchSummary | null {
   let winnerTitle = '';
   let reason = '';
 
-  // Kondisi 1: SEMUA KRU GUGUR (Kru yang tersisa = 0) -> Tim Penyusup Menang!
-  if (survivingCrew.length === 0 && totalCrew.length > 0) {
-    winnerTeam = 'impostor';
-    winnerTitle = '🚨 TIM PENYUSUP MENANG!';
-    reason = `Semua kru tertangkap! Tidak ada detektif kru yang tersisa (${survivingCrew.length}/${totalCrew.length} kru). Penyusup berhasil menguasai sekolah.`;
-  }
-  // Kondisi 2: SEMUA PENYUSUP GUGUR (Penyusup yang tersisa = 0) -> Tim Kru Menang!
-  else if (survivingImps.length === 0 && totalImps.length > 0) {
+  // Kondisi 1: SEMUA PENYUSUP GUGUR -> Kru Menang!
+  if (survivingImps.length === 0 && totalImps.length > 0) {
     winnerTeam = 'crew';
     winnerTitle = '🏆 TIM DETEKTIF / KRU MENANG!';
     reason = `Semua penyusup tertangkap! Kru yang tersisa (${survivingCrew.length}/${totalCrew.length} siswa) berhasil mempertahankan sekolah hingga titik akhir.`;
   }
-  // Kondisi 3: KRU SELESAIKAN SEMUA TUGAS KUIS
+  // Kondisi 2: SEMUA SISWA (SURVIVOR) YANG TERSISA SUDAH MENJAWAB SEMUA SOAL -> Kru Menang!
   else if (survivingCrew.length > 0) {
-    const anySoloWon = survivingCrew.some(c => c.doneTasks >= room.config.tasksToWin);
-    const totalDone = survivingCrew.reduce((acc, c) => acc + c.doneTasks, 0);
-    const targetCollective = Math.max(1, totalCrew.length * (room.config.tasksToWin - 1));
-
-    if (anySoloWon || (totalCrew.length > 1 && totalDone >= targetCollective)) {
+    const allSurvivorsFinished = survivingCrew.every(c => c.doneTasks >= room.config.tasksToWin);
+    if (allSurvivorsFinished) {
       winnerTeam = 'crew';
       winnerTitle = '🏆 TIM DETEKTIF / KRU MENANG!';
-      reason = `Tugas kuis sekolah berhasil diselesaikan! Detektif kru yang tersisa (${survivingCrew.length} siswa) berhasil mengaktifkan alarm keamanan.`;
+      reason = `Seluruh siswa detektif yang bertahan (${survivingCrew.length} siswa) berhasil menyelesaikan semua soal tantangan (${room.config.tasksToWin} soal/siswa)! Alarm keamanan sekolah telah aktif.`;
+    }
+  }
+
+  // Kondisi 3: PENYUSUP (IMPOSTOR) MENANG
+  // Sesuai rules: ketika berhasil membunuh SEMUA survivor DAN mengerjakan semua soal!
+  if (!winnerTeam && survivingCrew.length === 0 && totalCrew.length > 0) {
+    const impDone = totalImps.some(imp => imp.doneTasks >= room.config.tasksToWin) ||
+      totalImps.reduce((acc, imp) => acc + imp.doneTasks, 0) >= room.config.tasksToWin;
+
+    if (impDone) {
+      winnerTeam = 'impostor';
+      winnerTitle = '🚨 TIM PENYUSUP MENANG!';
+      reason = `Penyusup berhasil mengeliminasi semua siswa detektif DAN telah menyelesaikan seluruh soal tugas sekolah (${room.config.tasksToWin} soal)! Misi penyusup tuntas sempurna.`;
     }
   }
 
@@ -427,15 +431,118 @@ app.post('/api/room/:code/action', (req, res) => {
   }
 
   const { playerId, type, payload } = req.body;
-  const player = room.players.get(playerId);
+  const player = playerId ? room.players.get(playerId) : null;
+  const isHost = !playerId || room.hostId === playerId || player?.isHost || room.players.size <= 1;
+
+  if (type === 'add_bot' && isHost) {
+    const botIdx = room.players.size;
+    const botNames = ['Rani (Bot)', 'Budi (Bot)', 'Dimas (Bot)', 'Sari (Bot)', 'Alya (Bot)', 'Reza (Bot)'];
+    const botClasses = ['7A', '7B', '8A', '8B', '9A'];
+    const botName = botNames[botIdx % botNames.length];
+    const botClass = botClasses[botIdx % botClasses.length];
+    const botId = 'bot_' + Math.random().toString(36).substring(2, 7);
+    const colorIdx = room.players.size % CREW_COLORS.length;
+
+    const botPlayer: Player = {
+      id: botId,
+      name: botName,
+      playerClass: botClass,
+      role: 'crew',
+      color: CREW_COLORS[colorIdx],
+      x: CP[colorIdx % CP.length][0],
+      y: CP[colorIdx % CP.length][1],
+      dir: 1,
+      hp: room.config.crewLives,
+      maxHp: room.config.crewLives,
+      dead: false,
+      isMe: false,
+      isAI: true,
+      isHost: false,
+      isSpectator: false,
+      eliminatedAt: null,
+      survivedUntilEnd: true,
+      doneTasks: 0,
+      totalAttempts: 0,
+      correctAnswers: 0,
+      wrongAnswers: 0,
+      taskDurations: [],
+      shieldEndTime: 0,
+      shieldCooldownUntil: 0,
+      invulnerableUntil: 0,
+      freezeUntil: 0,
+      workUntil: 0,
+      completedBitmask: 0,
+      lockedStations: {}
+    };
+
+    room.players.set(botId, botPlayer);
+    pushRoomEvent(room, 'player_joined', {
+      player: botPlayer,
+      players: Array.from(room.players.values()),
+      message: `${botName} (${botClass}) bergabung sebagai bot latihan.`
+    });
+    return res.json({ status: 'ok', players: Array.from(room.players.values()) });
+  }
+
+  if (type === 'clear_bots' && isHost) {
+    for (const [id, p] of room.players.entries()) {
+      if (p.isAI) room.players.delete(id);
+    }
+    pushRoomEvent(room, 'player_left', {
+      players: Array.from(room.players.values()),
+      message: 'Semua bot telah dikeluarkan dari lobi.'
+    });
+    return res.json({ status: 'ok', players: Array.from(room.players.values()) });
+  }
 
   if (type === 'start_game') {
-    if (room.hostId !== playerId) {
+    if (!isHost) {
       return res.status(403).json({ error: 'Hanya host yang dapat memulai game' });
     }
-    const activePlayers = Array.from(room.players.values()).filter(p => !p.isSpectator);
-    if (activePlayers.length < 2) {
-      return res.status(400).json({ error: 'Minimal butuh 2 pemain untuk mulai' });
+    let activePlayers = Array.from(room.players.values()).filter(p => !p.isSpectator);
+    
+    // Auto-fill dengan Bot jika pemain kurang dari 4 (memudahkan pengujian instan)
+    if (activePlayers.length < 4) {
+      const needed = 4 - activePlayers.length;
+      const botNames = ['Rani (Bot)', 'Budi (Bot)', 'Dimas (Bot)', 'Bayangan (Bot)'];
+      const botClasses = ['7A', '7B', '8A', 'Penyusup'];
+      for (let b = 0; b < needed; b++) {
+        const botId = 'bot_' + Math.random().toString(36).substring(2, 7);
+        const colorIdx = room.players.size % CREW_COLORS.length;
+        const botPlayer: Player = {
+          id: botId,
+          name: botNames[b % botNames.length],
+          playerClass: botClasses[b % botClasses.length],
+          role: 'crew',
+          color: CREW_COLORS[colorIdx],
+          x: CP[colorIdx % CP.length][0],
+          y: CP[colorIdx % CP.length][1],
+          dir: 1,
+          hp: room.config.crewLives,
+          maxHp: room.config.crewLives,
+          dead: false,
+          isMe: false,
+          isAI: true,
+          isHost: false,
+          isSpectator: false,
+          eliminatedAt: null,
+          survivedUntilEnd: true,
+          doneTasks: 0,
+          totalAttempts: 0,
+          correctAnswers: 0,
+          wrongAnswers: 0,
+          taskDurations: [],
+          shieldEndTime: 0,
+          shieldCooldownUntil: 0,
+          invulnerableUntil: 0,
+          freezeUntil: 0,
+          workUntil: 0,
+          completedBitmask: 0,
+          lockedStations: {}
+        };
+        room.players.set(botId, botPlayer);
+      }
+      activePlayers = Array.from(room.players.values()).filter(p => !p.isSpectator);
     }
 
     const shuffledIds = activePlayers.map(p => p.id).sort(() => Math.random() - 0.5);

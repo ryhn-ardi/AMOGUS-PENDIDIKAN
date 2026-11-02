@@ -321,27 +321,32 @@ export const GameScreen: React.FC<Props> = ({
     let winnerTitle = '';
     let reason = '';
 
-    // Kondisi 1: SEMUA KRU GUGUR (Kru yang tersisa = 0) -> Tim Penyusup Menang!
-    if (survivingCrewPlayers.length === 0) {
-      winnerTeam = 'impostor';
-      winnerTitle = '🚨 TIM PENYUSUP MENANG!';
-      reason = `Semua kru tertangkap! Tidak ada detektif kru yang tersisa (${survivingCrewPlayers.length}/${totalCrewPlayers.length} kru). Penyusup berhasil bertahan dan menguasai sekolah.`;
-    }
-    // Kondisi 2: SEMUA PENYUSUP GUGUR (Penyusup yang tersisa = 0) -> Tim Kru Menang!
-    else if (survivingImpPlayers.length === 0) {
+    // Kondisi 1: SEMUA PENYUSUP GUGUR -> Tim Kru Menang!
+    if (survivingImpPlayers.length === 0 && totalImpPlayers.length > 0) {
       winnerTeam = 'crew';
       winnerTitle = '🏆 TIM DETEKTIF / KRU MENANG!';
       reason = `Semua penyusup tertangkap! Kru yang tersisa (${survivingCrewPlayers.length}/${totalCrewPlayers.length} orang) berhasil mempertahankan sekolah hingga titik akhir.`;
     }
-    // Kondisi 3: KRU SELESAIKAN SEMUA SOAL
-    else {
-      const anySoloWinner = survivingCrewPlayers.some(c => c.doneTasks >= config.tasksToWin);
-      const completedTasksCount = survivingCrewPlayers.reduce((acc, c) => acc + c.doneTasks, 0);
+    // Kondisi 2: SEMUA SISWA (SURVIVOR) YANG TERSISA SUDAH MENJAWAB SEMUA SOAL -> Tim Kru Menang!
+    else if (survivingCrewPlayers.length > 0 && survivingCrewPlayers.every(c => c.doneTasks >= config.tasksToWin)) {
+      winnerTeam = 'crew';
+      winnerTitle = '🏆 TIM DETEKTIF / KRU MENANG!';
+      reason = `Seluruh siswa detektif yang bertahan (${survivingCrewPlayers.length} siswa) berhasil menyelesaikan ${config.tasksToWin} soal kuis! Alarm keamanan sekolah berhasil diaktifkan.`;
+    }
+    // Kondisi 3: PENYUSUP MENANG JIKA MEMBUNUH SEMUA SURVIVOR DAN MENGERJAKAN SEMUA SOAL!
+    else if (survivingCrewPlayers.length === 0 && totalCrewPlayers.length > 0) {
+      const impCompletedAllTasks = totalImpPlayers.some(imp => imp.doneTasks >= config.tasksToWin) ||
+        totalImpPlayers.reduce((acc, imp) => acc + imp.doneTasks, 0) >= config.tasksToWin;
 
-      if (anySoloWinner || completedTasksCount >= (totalCrewPlayers.length * (config.tasksToWin - 1))) {
-        winnerTeam = 'crew';
-        winnerTitle = '🏆 TIM DETEKTIF / KRU MENANG!';
-        reason = `Misi tugas sekolah selesai! Detektif kru berhasil mengaktifkan alarm keamanan. Kru yang tersisa: ${survivingCrewPlayers.length} siswa selamat dari ancaman penyusup.`;
+      if (impCompletedAllTasks) {
+        winnerTeam = 'impostor';
+        winnerTitle = '🚨 TIM PENYUSUP MENANG!';
+        reason = `Penyusup berhasil mengeliminasi semua siswa detektif DAN telah menyelesaikan seluruh soal tugas sekolah (${config.tasksToWin} soal)! Penyusup menang mutlak.`;
+      } else {
+        // Kru sudah habis, tetapi penyusup belum menyelesaikan semua soal
+        if (g.myPlayer?.role === 'impostor') {
+          showBanner(`Semua siswa telah tertangkap! Selesaikan ${config.tasksToWin - (g.myPlayer.doneTasks || 0)} soal lagi di stasiun untuk memenangkan permainan!`);
+        }
       }
     }
 
@@ -907,6 +912,33 @@ export const GameScreen: React.FC<Props> = ({
 
               if (minDist < 390 && g.t >= (imp.shootCooldownUntil || 0)) {
                 triggerSkill(imp);
+              }
+            } else {
+              // Semua kru telah gugur: Impostor mengerjakan sisa soal di stasiun untuk memenuhi syarat menang!
+              let bestStation: TaskStation | null = null;
+              let bestDist = 1e9;
+              for (const s of g.stations) {
+                if ((imp.completedBitmask >> s.i) & 1) continue;
+                const d = Math.hypot(s.x - imp.x, s.y - imp.y);
+                if (d < bestDist) {
+                  bestDist = d;
+                  bestStation = s;
+                }
+              }
+              if (bestStation) {
+                if (bestDist < 45) {
+                  if (imp.workUntil <= g.t) {
+                    imp.workUntil = g.t + 2.0;
+                    imp.doneTasks++;
+                    imp.completedBitmask |= (1 << bestStation.i);
+                    checkGameEndCondition();
+                  }
+                } else {
+                  const angle = Math.atan2(bestStation.y - imp.y, bestStation.x - imp.x);
+                  imp.angle = angle;
+                  imp.dir = Math.cos(angle) > 0 ? 1 : -1;
+                  moveEntity(imp, Math.cos(angle) * 120 * dt, Math.sin(angle) * 120 * dt);
+                }
               }
             }
           } else if (imp.isMe) {
