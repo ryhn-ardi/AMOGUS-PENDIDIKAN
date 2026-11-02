@@ -6,21 +6,19 @@ import { QuestionEditor } from './components/QuestionEditor';
 import { LeaderboardModal } from './components/LeaderboardModal';
 import { OnlineLobby } from './components/OnlineLobby';
 import { getMatchHistory } from './utils/leaderboard';
+import { api, getClientId } from './utils/network';
 import { 
   Play, 
   Users, 
   Eye, 
   BookOpen, 
   Trophy, 
-  Settings, 
   Shield, 
   Skull, 
   Volume2, 
   VolumeX, 
   User, 
   GraduationCap, 
-  ChevronDown, 
-  ChevronUp, 
   Sparkles,
   Wifi,
   WifiOff
@@ -37,7 +35,7 @@ export default function App() {
   const [playerClass, setPlayerClass] = useState<string>('7A');
 
   const [soundOn, setSoundOn] = useState<boolean>(true);
-  const [showAdminConfig, setShowAdminConfig] = useState<boolean>(false);
+  const [serverOnline, setServerOnline] = useState<boolean>(true);
 
   // Match Summary & Leaderboard State
   const [lastMatchSummary, setLastMatchSummary] = useState<MatchSummary | null>(null);
@@ -45,7 +43,7 @@ export default function App() {
 
   // Online Multiplayer State
   const wsRef = useRef<WebSocket | null>(null);
-  const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const lastEventIdRef = useRef<number>(0);
   const [onlineRoom, setOnlineRoom] = useState<OnlineRoomData | null>(null);
   const [roomPlayers, setRoomPlayers] = useState<Player[]>([]);
   const [myPlayer, setMyPlayer] = useState<Player | null>(null);
@@ -76,7 +74,22 @@ export default function App() {
     return DEFAULT_QUESTIONS;
   });
 
-  // WebSocket Connection Management
+  // Check Server Health (Ensures status shows "Server Online" reliably)
+  useEffect(() => {
+    let isMounted = true;
+    const check = async () => {
+      const ok = await api.checkHealth();
+      if (isMounted) setServerOnline(ok);
+    };
+    check();
+    const interval = setInterval(check, 3000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // WebSocket Connection Management (With graceful auto-fallback)
   const connectWebSocket = useCallback(() => {
     if (typeof window === 'undefined') return;
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
@@ -91,12 +104,11 @@ export default function App() {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        setWsConnected(true);
+        setServerOnline(true);
       };
 
       ws.onclose = () => {
-        setWsConnected(false);
-        // Attempt reconnect after delay if not explicitly unmounted
+        // Fallback polling keeps the app fully functional
         setTimeout(() => {
           if (wsRef.current === ws) {
             connectWebSocket();
@@ -105,7 +117,7 @@ export default function App() {
       };
 
       ws.onerror = () => {
-        setWsConnected(false);
+        // Handled silently by HTTP REST fallback
       };
 
       ws.onmessage = (event) => {
@@ -120,9 +132,7 @@ export default function App() {
             setView('online_lobby');
           } else if (msg.type === 'player_joined') {
             setRoomPlayers(msg.players || []);
-            if (msg.message) {
-              sounds.playClick();
-            }
+            if (msg.message) sounds.playClick();
           } else if (msg.type === 'player_left') {
             setRoomPlayers(msg.players || []);
           } else if (msg.type === 'game_started') {
@@ -144,27 +154,24 @@ export default function App() {
             setShowLeaderboard(false);
             setView('online_lobby');
           } else if (msg.type === 'error') {
-            setOnlineError(msg.message || 'Terjadi kesalahan pada server room.');
+            setOnlineError(msg.message || 'Terjadi kesalahan.');
             setTimeout(() => setOnlineError(''), 4000);
           }
         } catch (e) {
-          console.error('Error handling WebSocket message', e);
+          console.error('Error in ws message', e);
         }
       };
-    } catch (e) {
-      console.error('Failed to instantiate WebSocket', e);
+    } catch {
+      // Ignored: HTTP sync active
     }
   }, []);
 
   useEffect(() => {
     connectWebSocket();
 
-    // Load saved preferences
     try {
       const savedConfig = localStorage.getItem('dk_cf_v2');
-      if (savedConfig) {
-        setConfig(prev => ({ ...prev, ...JSON.parse(savedConfig) }));
-      }
+      if (savedConfig) setConfig(prev => ({ ...prev, ...JSON.parse(savedConfig) }));
       const savedName = localStorage.getItem('dk_player_name');
       if (savedName) setPlayerName(savedName);
       const savedClass = localStorage.getItem('dk_player_class');
@@ -172,27 +179,50 @@ export default function App() {
     } catch {}
 
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      if (wsRef.current) wsRef.current.close();
     };
   }, [connectWebSocket]);
+
+  // Periodic Lobby Polling Synchronization
+  useEffect(() => {
+    if (!onlineRoom || view !== 'online_lobby') return;
+
+    const interval = setInterval(async () => {
+      try {
+        const data = await api.syncRoom(onlineRoom.code, lastEventIdRef.current);
+        if (data.lastEventId) lastEventIdRef.current = data.lastEventId;
+
+        if (Array.isArray(data.players)) {
+          setRoomPlayers(data.players);
+          const currentMe = data.players.find(p => p.id === myPlayer?.id);
+          if (currentMe) setMyPlayer(currentMe);
+        }
+
+        if (data.status === 'playing') {
+          setOnlineRoom(data.room);
+          setInitialOnlineStations(data.stations || []);
+          setIsOnlineMode(true);
+          setView('game');
+        }
+
+        if (Array.isArray(data.events)) {
+          data.events.forEach(ev => {
+            if (ev.type === 'chat_broadcast') {
+              setChatMessages(prev => [...prev.slice(-30), ev.payload]);
+            }
+          });
+        }
+      } catch {}
+    }, 700);
+
+    return () => clearInterval(interval);
+  }, [onlineRoom, view, myPlayer?.id]);
 
   const handleSaveQuestions = (newQuestions: Question[]) => {
     setQuestions(newQuestions);
     try {
       localStorage.setItem('dk_q_v2', JSON.stringify(newQuestions));
     } catch {}
-  };
-
-  const handleUpdateConfig = (key: keyof GameConfig, val: number) => {
-    setConfig(prev => {
-      const next = { ...prev, [key]: val };
-      try {
-        localStorage.setItem('dk_cf_v2', JSON.stringify(next));
-      } catch {}
-      return next;
-    });
   };
 
   const handleNameChange = (name: string) => {
@@ -211,8 +241,8 @@ export default function App() {
     } catch {}
   };
 
-  // Online Room Actions
-  const handleCreateRoom = (
+  // Online Room Handlers (Full REST API + WebSocket Sync)
+  const handleCreateRoom = async (
     customCode: string,
     name: string,
     cls: string,
@@ -222,51 +252,71 @@ export default function App() {
   ) => {
     handleNameChange(name);
     handleClassChange(cls);
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      connectWebSocket();
-      return;
+    try {
+      const data = await api.createRoom({
+        roomCode: customCode,
+        name,
+        playerClass: cls,
+        config: hostConfig,
+        questions: qs,
+        isSpectator: spectator
+      });
+      setOnlineRoom(data.room);
+      setRoomPlayers(data.players || []);
+      setMyPlayer(data.myPlayer || null);
+      lastEventIdRef.current = data.lastEventId || 0;
+      setOnlineError('');
+      setView('online_lobby');
+    } catch (err: any) {
+      setOnlineError(err.message || 'Gagal membuat room.');
+      setTimeout(() => setOnlineError(''), 4000);
     }
-    wsRef.current.send(JSON.stringify({
-      type: 'create_room',
-      roomCode: customCode,
-      name,
-      playerClass: cls,
-      config: hostConfig,
-      questions: qs,
-      isSpectator: spectator
-    }));
   };
 
-  const handleJoinRoom = (code: string, name: string, cls: string, spectator: boolean) => {
+  const handleJoinRoom = async (code: string, name: string, cls: string, spectator: boolean) => {
     handleNameChange(name);
     handleClassChange(cls);
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      connectWebSocket();
-      return;
-    }
-    wsRef.current.send(JSON.stringify({
-      type: 'join_room',
-      roomCode: code,
-      name,
-      playerClass: cls,
-      isSpectator: spectator
-    }));
-  };
-
-  const handleStartOnlineGame = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      sounds.playClick();
-      wsRef.current.send(JSON.stringify({
-        type: 'start_game'
-      }));
+    try {
+      const data = await api.joinRoom({
+        roomCode: code,
+        name,
+        playerClass: cls,
+        isSpectator: spectator
+      });
+      setOnlineRoom(data.room);
+      setRoomPlayers(data.players || []);
+      setMyPlayer(data.myPlayer || null);
+      lastEventIdRef.current = data.lastEventId || 0;
+      setOnlineError('');
+      setView('online_lobby');
+    } catch (err: any) {
+      setOnlineError(err.message || 'Gagal bergabung ke room.');
+      setTimeout(() => setOnlineError(''), 4000);
     }
   };
 
-  const handleLeaveOnlineRoom = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'leave_room'
-      }));
+  const handleStartOnlineGame = async () => {
+    if (!onlineRoom) return;
+    sounds.playClick();
+    try {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'start_game' }));
+      }
+      await api.sendAction(onlineRoom.code, 'start_game', {});
+    } catch (err: any) {
+      setOnlineError(err.message || 'Gagal memulai pertandingan.');
+      setTimeout(() => setOnlineError(''), 3000);
+    }
+  };
+
+  const handleLeaveOnlineRoom = async () => {
+    if (onlineRoom) {
+      try {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'leave_room' }));
+        }
+        await api.sendAction(onlineRoom.code, 'leave_room', {});
+      } catch {}
     }
     setOnlineRoom(null);
     setRoomPlayers([]);
@@ -275,13 +325,14 @@ export default function App() {
     setView('menu');
   };
 
-  const handleSendChat = (text: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'chat_message',
-        text
-      }));
-    }
+  const handleSendChat = async (text: string) => {
+    if (!onlineRoom) return;
+    try {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'chat_message', text }));
+      }
+      await api.sendAction(onlineRoom.code, 'chat_message', { text });
+    } catch {}
   };
 
   // Solo & Offline Fallbacks
@@ -405,15 +456,16 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
-          {/* Status Koneksi Online */}
+          {/* Status Koneksi Online - Aktif & Terverifikasi */}
           <div className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg bg-[#14261f] border border-[#335a49]">
-            {wsConnected ? (
-              <span className="flex items-center gap-1 text-[#6fd08c] font-medium">
+            {serverOnline ? (
+              <span className="flex items-center gap-1.5 text-[#6fd08c] font-medium">
+                <span className="w-2 h-2 rounded-full bg-[#6fd08c] animate-pulse"></span>
                 <Wifi className="w-3.5 h-3.5" />
                 Server Online
               </span>
             ) : (
-              <span className="flex items-center gap-1 text-[#ef6b5b]">
+              <span className="flex items-center gap-1.5 text-[#ef6b5b]">
                 <WifiOff className="w-3.5 h-3.5" />
                 Menghubungkan...
               </span>
@@ -504,7 +556,6 @@ export default function App() {
 
             {/* Primary Action Buttons */}
             <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-              {/* Main Online Button (Paling Diutamakan) */}
               <button
                 onClick={() => {
                   sounds.playClick();
@@ -584,12 +635,14 @@ export default function App() {
             onlineRoom={isOnlineMode ? onlineRoom : null}
             initialOnlinePlayers={isOnlineMode ? roomPlayers : undefined}
             initialStations={isOnlineMode ? initialOnlineStations : undefined}
-            myPlayerId={myPlayer?.id}
+            myPlayerId={myPlayer?.id || getClientId()}
             onGameOver={handleGameOver}
-            onExit={() => {
+            onExit={async () => {
               if (isOnlineMode) {
-                if (onlineRoom?.hostId === myPlayer?.id && wsRef.current) {
-                  wsRef.current.send(JSON.stringify({ type: 'return_to_lobby' }));
+                if (onlineRoom && onlineRoom.hostId === myPlayer?.id) {
+                  try {
+                    await api.sendAction(onlineRoom.code, 'return_to_lobby', {});
+                  } catch {}
                 } else {
                   handleLeaveOnlineRoom();
                 }
@@ -615,11 +668,13 @@ export default function App() {
       {showLeaderboard && lastMatchSummary && (
         <LeaderboardModal
           summary={lastMatchSummary}
-          onPlayAgain={() => {
+          onPlayAgain={async () => {
             setShowLeaderboard(false);
-            if (isOnlineMode) {
-              if (onlineRoom?.hostId === myPlayer?.id && wsRef.current) {
-                wsRef.current.send(JSON.stringify({ type: 'return_to_lobby' }));
+            if (isOnlineMode && onlineRoom) {
+              if (onlineRoom.hostId === myPlayer?.id) {
+                try {
+                  await api.sendAction(onlineRoom.code, 'return_to_lobby', {});
+                } catch {}
               }
               setView('online_lobby');
             } else {

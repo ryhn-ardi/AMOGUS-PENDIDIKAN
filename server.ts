@@ -8,7 +8,6 @@ import {
   GameConfig, 
   Question, 
   TaskStation, 
-  GameBullet, 
   MatchSummary, 
   OnlineRoomData 
 } from './src/types/game.ts';
@@ -22,6 +21,18 @@ const PORT = Number(process.env.PORT) || 3000;
 
 const app = express();
 app.use(express.json());
+
+// Enable CORS and disable caching on API routes
+app.use('/api', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 const httpServer = createHttpServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -51,6 +62,13 @@ interface ConnectedClient {
   roomCode: string | null;
 }
 
+interface RoomEvent {
+  id: number;
+  type: string;
+  payload: any;
+  timestamp: number;
+}
+
 interface RoomState {
   code: string;
   hostId: string;
@@ -62,6 +80,10 @@ interface RoomState {
   gameStartTime: number;
   players: Map<string, Player>;
   stations: TaskStation[];
+  events: RoomEvent[];
+  lastEventId: number;
+  matchSummary?: MatchSummary | null;
+  lastActive: number;
 }
 
 const rooms = new Map<string, RoomState>();
@@ -74,6 +96,28 @@ function generateRoomCode(): string {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return rooms.has(code) ? generateRoomCode() : code;
+}
+
+function pushRoomEvent(room: RoomState, type: string, payload: any) {
+  room.lastEventId++;
+  const event: RoomEvent = {
+    id: room.lastEventId,
+    type,
+    payload,
+    timestamp: Date.now()
+  };
+  room.events.push(event);
+  if (room.events.length > 80) {
+    room.events.shift();
+  }
+  room.lastActive = Date.now();
+
+  // Also broadcast to WebSocket clients connected to this room
+  broadcastToRoom(room, {
+    type,
+    ...payload,
+    eventId: event.id
+  });
 }
 
 function broadcastToRoom(room: RoomState, message: any, excludeWs?: WebSocket) {
@@ -161,15 +205,16 @@ function checkRoomVictory(room: RoomState): MatchSummary | null {
       matchDuration,
       leaderboard
     };
+    room.matchSummary = summary;
     return summary;
   }
 
   return null;
 }
 
-// REST API
+// REST API Endpoints (Fully functional with or without WebSocket)
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: Date.now() });
+  res.json({ status: 'ok', time: Date.now(), roomsCount: rooms.size });
 });
 
 app.get('/api/rooms', (req, res) => {
@@ -183,38 +228,14 @@ app.get('/api/rooms', (req, res) => {
   res.json({ rooms: activeRooms });
 });
 
-// WebSocket Protocol
-wss.on('connection', (ws) => {
-  const clientId = 'c_' + Math.random().toString(36).substring(2, 9);
-  const client: ConnectedClient = { ws, id: clientId, roomCode: null };
-  clients.set(ws, client);
-
-  ws.send(JSON.stringify({ type: 'connected', clientId }));
-
-  ws.on('message', (data) => {
-    try {
-      const msg = JSON.parse(data.toString());
-      handleClientMessage(client, msg);
-    } catch (e) {
-      console.error('Error parsing client message', e);
-    }
-  });
-
-  ws.on('close', () => {
-    handleClientDisconnect(client);
-    clients.delete(ws);
-  });
-});
-
-function handleClientMessage(client: ConnectedClient, msg: any) {
-  const { type } = msg;
-
-  // 1. Create Room
-  if (type === 'create_room') {
-    const rawCode = (msg.roomCode || generateRoomCode()).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+app.post('/api/room/create', (req, res) => {
+  try {
+    const { roomCode, name, playerClass, config, questions, isSpectator, clientId } = req.body;
+    const rawCode = (roomCode || generateRoomCode()).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
     const code = rawCode.slice(0, 10) || generateRoomCode();
-    const hostName = (msg.name || 'Guru').trim().slice(0, 16);
-    const playerClass = (msg.playerClass || 'Umum').trim().slice(0, 16);
+    const hostName = (name || 'Guru').trim().slice(0, 16);
+    const pClass = (playerClass || 'Umum').trim().slice(0, 16);
+    const pid = clientId || 'p_' + Math.random().toString(36).substring(2, 9);
 
     const defaultConfig: GameConfig = {
       impostorsCount: 2,
@@ -228,21 +249,24 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
 
     const room: RoomState = {
       code,
-      hostId: client.id,
+      hostId: pid,
       hostName,
       status: 'lobby',
-      config: msg.config || defaultConfig,
-      questions: Array.isArray(msg.questions) && msg.questions.length > 0 ? msg.questions : DEFAULT_QUESTIONS,
+      config: config || defaultConfig,
+      questions: Array.isArray(questions) && questions.length > 0 ? questions : DEFAULT_QUESTIONS,
       createdAt: Date.now(),
       gameStartTime: 0,
       players: new Map(),
-      stations: []
+      stations: [],
+      events: [],
+      lastEventId: 0,
+      lastActive: Date.now()
     };
 
     const hostPlayer: Player = {
-      id: client.id,
+      id: pid,
       name: hostName,
-      playerClass,
+      playerClass: pClass,
       role: 'crew',
       color: CREW_COLORS[0],
       x: CP[0][0],
@@ -254,7 +278,7 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
       isMe: true,
       isAI: false,
       isHost: true,
-      isSpectator: !!msg.isSpectator,
+      isSpectator: !!isSpectator,
       eliminatedAt: null,
       survivedUntilEnd: true,
       doneTasks: 0,
@@ -271,116 +295,142 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
       lockedStations: {}
     };
 
-    room.players.set(client.id, hostPlayer);
+    room.players.set(pid, hostPlayer);
     rooms.set(code, room);
-    client.roomCode = code;
 
-    client.ws.send(JSON.stringify({
-      type: 'room_created',
-      room: getSanitizedRoomData(room),
+    pushRoomEvent(room, 'player_joined', {
+      player: hostPlayer,
       players: Array.from(room.players.values()),
-      myPlayer: hostPlayer
-    }));
-    return;
-  }
+      message: `${hostName} (${pClass}) membuat room.`
+    });
 
-  // 2. Join Room
-  if (type === 'join_room') {
-    const code = (msg.roomCode || '').trim().toUpperCase();
+    res.json({
+      status: 'ok',
+      room: getSanitizedRoomData(room),
+      myPlayer: hostPlayer,
+      players: Array.from(room.players.values()),
+      lastEventId: room.lastEventId
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/room/join', (req, res) => {
+  try {
+    const { roomCode, name, playerClass, isSpectator, clientId } = req.body;
+    const code = (roomCode || '').trim().toUpperCase();
     const room = rooms.get(code);
 
     if (!room) {
-      client.ws.send(JSON.stringify({
-        type: 'error',
-        message: `Room "${code}" tidak ditemukan. Pastikan kode room benar.`
-      }));
-      return;
+      return res.status(404).json({ error: `Room "${code}" tidak ditemukan. Pastikan kode room benar.` });
     }
 
-    if (room.status === 'playing' && !msg.isSpectator) {
-      client.ws.send(JSON.stringify({
-        type: 'error',
-        message: `Pertandingan di Room "${code}" sedang berlangsung. Anda bisa bergabung sebagai spektator.`
-      }));
-      return;
+    if (room.status === 'playing' && !isSpectator) {
+      return res.status(400).json({ error: `Pertandingan di Room "${code}" sedang berlangsung. Masuklah sebagai spektator.` });
     }
 
-    const name = (msg.name || 'Siswa').trim().slice(0, 16);
-    const playerClass = (msg.playerClass || '-').trim().slice(0, 16);
+    const playerName = (name || 'Siswa').trim().slice(0, 16);
+    const pClass = (playerClass || 'Umum').trim().slice(0, 16);
+    const pid = clientId || 'p_' + Math.random().toString(36).substring(2, 9);
     const colorIdx = room.players.size % CREW_COLORS.length;
 
-    const newPlayer: Player = {
-      id: client.id,
-      name,
-      playerClass,
-      role: 'crew',
-      color: CREW_COLORS[colorIdx],
-      x: CP[colorIdx % CP.length][0],
-      y: CP[colorIdx % CP.length][1],
-      dir: 1,
-      hp: room.config.crewLives,
-      maxHp: room.config.crewLives,
-      dead: false,
-      isMe: true,
-      isAI: false,
-      isHost: false,
-      isSpectator: !!msg.isSpectator,
-      eliminatedAt: null,
-      survivedUntilEnd: true,
-      doneTasks: 0,
-      totalAttempts: 0,
-      correctAnswers: 0,
-      wrongAnswers: 0,
-      taskDurations: [],
-      shieldEndTime: 0,
-      shieldCooldownUntil: 0,
-      invulnerableUntil: 0,
-      freezeUntil: 0,
-      workUntil: 0,
-      completedBitmask: 0,
-      lockedStations: {}
-    };
+    let existing = room.players.get(pid);
+    if (!existing) {
+      existing = {
+        id: pid,
+        name: playerName,
+        playerClass: pClass,
+        role: 'crew',
+        color: CREW_COLORS[colorIdx],
+        x: CP[colorIdx % CP.length][0],
+        y: CP[colorIdx % CP.length][1],
+        dir: 1,
+        hp: room.config.crewLives,
+        maxHp: room.config.crewLives,
+        dead: false,
+        isMe: true,
+        isAI: false,
+        isHost: false,
+        isSpectator: !!isSpectator,
+        eliminatedAt: null,
+        survivedUntilEnd: true,
+        doneTasks: 0,
+        totalAttempts: 0,
+        correctAnswers: 0,
+        wrongAnswers: 0,
+        taskDurations: [],
+        shieldEndTime: 0,
+        shieldCooldownUntil: 0,
+        invulnerableUntil: 0,
+        freezeUntil: 0,
+        workUntil: 0,
+        completedBitmask: 0,
+        lockedStations: {}
+      };
+      room.players.set(pid, existing);
 
-    room.players.set(client.id, newPlayer);
-    client.roomCode = code;
-
-    client.ws.send(JSON.stringify({
-      type: 'room_joined',
-      room: getSanitizedRoomData(room),
-      players: Array.from(room.players.values()),
-      myPlayer: newPlayer
-    }));
-
-    broadcastToRoom(room, {
-      type: 'player_joined',
-      player: newPlayer,
-      players: Array.from(room.players.values()),
-      message: `${name} (${playerClass}) bergabung ke room!`
-    }, client.ws);
-    return;
-  }
-
-  // Ensure client is in a valid room for gameplay messages
-  if (!client.roomCode) return;
-  const room = rooms.get(client.roomCode);
-  if (!room) return;
-  const player = room.players.get(client.id);
-
-  // 3. Start Game (Host Only)
-  if (type === 'start_game') {
-    if (room.hostId !== client.id) return;
-    if (room.status === 'playing') return;
-
-    const activePlayers = Array.from(room.players.values()).filter(p => !p.isSpectator);
-    if (activePlayers.length < 2) {
-      client.ws.send(JSON.stringify({
-        type: 'error',
-        message: 'Minimal butuh 2 pemain (selain spektator) untuk memulai game!'
-      }));
-      return;
+      pushRoomEvent(room, 'player_joined', {
+        player: existing,
+        players: Array.from(room.players.values()),
+        message: `${playerName} (${pClass}) bergabung ke room!`
+      });
     }
 
-    // Role assignment
+    res.json({
+      status: 'ok',
+      room: getSanitizedRoomData(room),
+      myPlayer: existing,
+      players: Array.from(room.players.values()),
+      lastEventId: room.lastEventId
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Periodic HTTP Sync endpoint for real-time room updates
+app.get('/api/room/:code/sync', (req, res) => {
+  const code = req.params.code.toUpperCase();
+  const room = rooms.get(code);
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+
+  const sinceId = Number(req.query.since || 0);
+  const newEvents = room.events.filter(e => e.id > sinceId);
+
+  res.json({
+    status: room.status,
+    room: getSanitizedRoomData(room),
+    players: Array.from(room.players.values()),
+    stations: room.stations,
+    events: newEvents,
+    lastEventId: room.lastEventId,
+    summary: room.matchSummary || null
+  });
+});
+
+// Universal Action endpoint (handles move, shoot, shield, task, hit, chat)
+app.post('/api/room/:code/action', (req, res) => {
+  const code = req.params.code.toUpperCase();
+  const room = rooms.get(code);
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+
+  const { playerId, type, payload } = req.body;
+  const player = room.players.get(playerId);
+
+  if (type === 'start_game') {
+    if (room.hostId !== playerId) {
+      return res.status(403).json({ error: 'Hanya host yang dapat memulai game' });
+    }
+    const activePlayers = Array.from(room.players.values()).filter(p => !p.isSpectator);
+    if (activePlayers.length < 2) {
+      return res.status(400).json({ error: 'Minimal butuh 2 pemain untuk mulai' });
+    }
+
     const shuffledIds = activePlayers.map(p => p.id).sort(() => Math.random() - 0.5);
     const numImps = Math.min(room.config.impostorsCount, Math.max(1, Math.floor(activePlayers.length / 3)));
     const impIds = new Set(shuffledIds.slice(0, numImps));
@@ -427,26 +477,27 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
 
     room.status = 'playing';
     room.gameStartTime = performance.now();
+    room.matchSummary = null;
 
-    broadcastToRoom(room, {
-      type: 'game_started',
+    pushRoomEvent(room, 'game_started', {
       room: getSanitizedRoomData(room),
       players: Array.from(room.players.values()),
       stations: room.stations,
       gameStartTime: room.gameStartTime
     });
-    return;
+
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
   }
 
-  // 4. Player Update (Movement)
   if (type === 'player_update' && player) {
-    if (typeof msg.x === 'number') player.x = msg.x;
-    if (typeof msg.y === 'number') player.y = msg.y;
-    if (typeof msg.dir === 'number') player.dir = msg.dir;
-    if (typeof msg.angle === 'number') player.angle = msg.angle;
-    if (typeof msg.workUntil === 'number') player.workUntil = msg.workUntil;
-    if (typeof msg.shieldEndTime === 'number') player.shieldEndTime = msg.shieldEndTime;
+    if (typeof payload.x === 'number') player.x = payload.x;
+    if (typeof payload.y === 'number') player.y = payload.y;
+    if (typeof payload.dir === 'number') player.dir = payload.dir;
+    if (typeof payload.angle === 'number') player.angle = payload.angle;
+    if (typeof payload.workUntil === 'number') player.workUntil = payload.workUntil;
+    if (typeof payload.shieldEndTime === 'number') player.shieldEndTime = payload.shieldEndTime;
 
+    // Broadcast position update to WebSocket peers immediately
     broadcastToRoom(room, {
       type: 'player_moved',
       playerId: player.id,
@@ -456,41 +507,37 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
       angle: player.angle,
       workUntil: player.workUntil,
       shieldEndTime: player.shieldEndTime
-    }, client.ws);
-    return;
+    });
+
+    return res.json({ status: 'ok' });
   }
 
-  // 5. Shield Usage
   if (type === 'use_shield' && player && player.role === 'crew') {
     const now = (performance.now() - room.gameStartTime) / 1000;
     player.shieldEndTime = now + room.config.shieldDuration;
     player.shieldCooldownUntil = now + Math.max(room.config.shieldCooldown, room.config.shieldDuration);
 
-    broadcastToRoom(room, {
-      type: 'shield_used',
+    pushRoomEvent(room, 'shield_used', {
       playerId: player.id,
       shieldEndTime: player.shieldEndTime,
       shieldCooldownUntil: player.shieldCooldownUntil
     });
-    return;
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
   }
 
-  // 6. Impostor Shoot
   if (type === 'shoot_bullet' && player && player.role === 'impostor') {
-    broadcastToRoom(room, {
-      type: 'bullet_fired',
+    pushRoomEvent(room, 'bullet_fired', {
       shooterId: player.id,
       x: player.x,
       y: player.y,
-      angle: msg.angle || player.angle || 0
+      angle: payload.angle || player.angle || 0
     });
-    return;
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
   }
 
-  // 7. Task Answered
   if (type === 'task_completed' && player) {
-    const stationIndex = msg.stationIndex;
-    const duration = msg.duration || 3.0;
+    const stationIndex = payload.stationIndex;
+    const duration = payload.duration || 3.0;
 
     player.doneTasks++;
     player.correctAnswers++;
@@ -500,8 +547,7 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
       player.completedBitmask |= (1 << stationIndex);
     }
 
-    broadcastToRoom(room, {
-      type: 'task_progress',
+    pushRoomEvent(room, 'task_progress', {
       playerId: player.id,
       doneTasks: player.doneTasks,
       correctAnswers: player.correctAnswers,
@@ -512,34 +558,29 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
 
     const victory = checkRoomVictory(room);
     if (victory) {
-      broadcastToRoom(room, {
-        type: 'game_over',
-        summary: victory
-      });
+      pushRoomEvent(room, 'game_over', { summary: victory });
     }
-    return;
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
   }
 
   if (type === 'task_failed' && player) {
     player.wrongAnswers++;
     player.totalAttempts++;
-    if (typeof msg.stationIndex === 'number') {
+    if (typeof payload.stationIndex === 'number') {
       const now = (performance.now() - room.gameStartTime) / 1000;
-      player.lockedStations[msg.stationIndex] = now + 6;
+      player.lockedStations[payload.stationIndex] = now + 6;
     }
 
-    broadcastToRoom(room, {
-      type: 'task_failed',
+    pushRoomEvent(room, 'task_failed', {
       playerId: player.id,
       wrongAnswers: player.wrongAnswers,
       totalAttempts: player.totalAttempts
     });
-    return;
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
   }
 
-  // 8. Player Hit
   if (type === 'player_hit' && player && player.role === 'crew') {
-    if (player.dead) return;
+    if (player.dead) return res.json({ status: 'ok' });
 
     player.hp--;
     if (player.hp <= 0) {
@@ -547,8 +588,7 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
       const gameTime = Math.max(1, (performance.now() - room.gameStartTime) / 1000);
       player.eliminatedAt = gameTime;
 
-      broadcastToRoom(room, {
-        type: 'player_eliminated',
+      pushRoomEvent(room, 'player_eliminated', {
         playerId: player.id,
         name: player.name,
         playerClass: player.playerClass,
@@ -556,8 +596,7 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
         message: `${player.name} (${player.playerClass}) tertangkap oleh penyusup!`
       });
     } else {
-      broadcastToRoom(room, {
-        type: 'player_damaged',
+      pushRoomEvent(room, 'player_damaged', {
         playerId: player.id,
         hp: player.hp,
         message: `${player.name} terkena serangan! (Nyawa: ${player.hp})`
@@ -566,17 +605,28 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
 
     const victory = checkRoomVictory(room);
     if (victory) {
-      broadcastToRoom(room, {
-        type: 'game_over',
-        summary: victory
-      });
+      pushRoomEvent(room, 'game_over', { summary: victory });
     }
-    return;
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
   }
 
-  // 9. Return to Lobby
-  if (type === 'return_to_lobby' && room.hostId === client.id) {
+  if (type === 'chat_message' && player) {
+    const text = String(payload.text || '').trim().slice(0, 80);
+    if (text) {
+      pushRoomEvent(room, 'chat_broadcast', {
+        senderName: player.name,
+        senderClass: player.playerClass,
+        senderColor: player.color,
+        text,
+        time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+      });
+    }
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
+  }
+
+  if (type === 'return_to_lobby' && room.hostId === playerId) {
     room.status = 'lobby';
+    room.matchSummary = null;
     for (const p of room.players.values()) {
       p.dead = false;
       p.hp = room.config.crewLives;
@@ -590,75 +640,97 @@ function handleClientMessage(client: ConnectedClient, msg: any) {
       p.eliminatedAt = null;
     }
 
-    broadcastToRoom(room, {
-      type: 'returned_to_lobby',
+    pushRoomEvent(room, 'returned_to_lobby', {
       room: getSanitizedRoomData(room),
       players: Array.from(room.players.values())
     });
-    return;
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
   }
 
-  // 10. Chat Message
-  if (type === 'chat_message' && player) {
-    const text = String(msg.text || '').trim().slice(0, 80);
-    if (text) {
-      broadcastToRoom(room, {
-        type: 'chat_broadcast',
-        senderName: player.name,
-        senderClass: player.playerClass,
-        senderColor: player.color,
-        text,
-        time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
-      });
+  if (type === 'leave_room') {
+    room.players.delete(playerId);
+    if (room.players.size === 0) {
+      rooms.delete(room.code);
+      return res.json({ status: 'ok' });
     }
-  }
-}
 
-function handleClientDisconnect(client: ConnectedClient) {
-  if (!client.roomCode) return;
-  const room = rooms.get(client.roomCode);
-  if (!room) return;
-
-  const leavingPlayer = room.players.get(client.id);
-  room.players.delete(client.id);
-
-  if (room.players.size === 0) {
-    rooms.delete(room.code);
-    return;
-  }
-
-  // Reassign host if host left
-  if (room.hostId === client.id) {
-    const nextPlayer = room.players.values().next().value;
-    if (nextPlayer) {
-      room.hostId = nextPlayer.id;
-      room.hostName = nextPlayer.name;
-      nextPlayer.isHost = true;
+    if (room.hostId === playerId) {
+      const nextPlayer = room.players.values().next().value;
+      if (nextPlayer) {
+        room.hostId = nextPlayer.id;
+        room.hostName = nextPlayer.name;
+        nextPlayer.isHost = true;
+      }
     }
+
+    pushRoomEvent(room, 'player_left', {
+      playerId,
+      name: player?.name,
+      playerClass: player?.playerClass,
+      players: Array.from(room.players.values()),
+      newHostId: room.hostId,
+      message: `${player?.name || 'Pemain'} keluar dari room.`
+    });
+
+    if (room.status === 'playing') {
+      const victory = checkRoomVictory(room);
+      if (victory) {
+        pushRoomEvent(room, 'game_over', { summary: victory });
+      }
+    }
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
   }
 
-  broadcastToRoom(room, {
-    type: 'player_left',
-    playerId: client.id,
-    name: leavingPlayer?.name,
-    playerClass: leavingPlayer?.playerClass,
-    players: Array.from(room.players.values()),
-    newHostId: room.hostId,
-    message: `${leavingPlayer?.name || 'Pemain'} keluar dari room.`
+  res.json({ status: 'ignored' });
+});
+
+// WebSocket Protocol handling
+wss.on('connection', (ws) => {
+  const clientId = 'c_' + Math.random().toString(36).substring(2, 9);
+  const client: ConnectedClient = { ws, id: clientId, roomCode: null };
+  clients.set(ws, client);
+
+  ws.send(JSON.stringify({ type: 'connected', clientId }));
+
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.roomCode) client.roomCode = msg.roomCode;
+      // Also map client message to room event handling
+      const room = client.roomCode ? rooms.get(client.roomCode) : null;
+      if (room && msg.type === 'player_update') {
+        const player = room.players.get(client.id);
+        if (player) {
+          if (typeof msg.x === 'number') player.x = msg.x;
+          if (typeof msg.y === 'number') player.y = msg.y;
+          if (typeof msg.dir === 'number') player.dir = msg.dir;
+          if (typeof msg.angle === 'number') player.angle = msg.angle;
+          if (typeof msg.workUntil === 'number') player.workUntil = msg.workUntil;
+          if (typeof msg.shieldEndTime === 'number') player.shieldEndTime = msg.shieldEndTime;
+
+          broadcastToRoom(room, {
+            type: 'player_moved',
+            playerId: player.id,
+            x: player.x,
+            y: player.y,
+            dir: player.dir,
+            angle: player.angle,
+            workUntil: player.workUntil,
+            shieldEndTime: player.shieldEndTime
+          }, ws);
+        }
+      }
+    } catch (e) {
+      console.error('Error in WS message', e);
+    }
   });
 
-  if (room.status === 'playing') {
-    const victory = checkRoomVictory(room);
-    if (victory) {
-      broadcastToRoom(room, {
-        type: 'game_over',
-        summary: victory
-      });
-    }
-  }
-}
+  ws.on('close', () => {
+    clients.delete(ws);
+  });
+});
 
-// Full-Stack Server Mounting (Vite middlewares in dev, static files in prod)
+// Full-Stack Server Mounting (Vite middlewares in dev, static in prod)
 async function startServer() {
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
@@ -675,7 +747,7 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`🎮 Detektif Kelas Online Server running on port ${PORT}`);
+    console.log(`🎮 Detektif Kelas Full-Stack Server running on port ${PORT}`);
   });
 }
 

@@ -3,6 +3,7 @@ import { Player, Question, TaskStation, GameBullet, GameConfig, MatchSummary, On
 import { sounds } from '../utils/sound';
 import { calculateLeaderboard, saveMatchResult } from '../utils/leaderboard';
 import { Shield, Skull, Eye, Volume2, VolumeX, LogOut, CheckCircle, Zap } from 'lucide-react';
+import { api } from '../utils/network';
 
 interface Props {
   questions: Question[];
@@ -236,12 +237,12 @@ export const GameScreen: React.FC<Props> = ({
         });
       });
 
-      // If online, broadcast to other players
-      if (ws && ws.readyState === WebSocket.OPEN && p.isMe) {
-        ws.send(JSON.stringify({
-          type: 'shoot_bullet',
-          angle
-        }));
+      // Broadcast to other players
+      if (onlineRoom && p.isMe) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'shoot_bullet', angle }));
+        }
+        api.sendAction(onlineRoom.code, 'shoot_bullet', { angle }).catch(() => {});
       }
     } else {
       // Crew Shield
@@ -254,13 +255,14 @@ export const GameScreen: React.FC<Props> = ({
         showBanner("Tameng aktif! Kebal dari serangan selama " + config.shieldDuration + " detik.");
       }
 
-      if (ws && ws.readyState === WebSocket.OPEN && p.isMe) {
-        ws.send(JSON.stringify({
-          type: 'use_shield'
-        }));
+      if (onlineRoom && p.isMe) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'use_shield' }));
+        }
+        api.sendAction(onlineRoom.code, 'use_shield', {}).catch(() => {});
       }
     }
-  }, [config, showBanner, ws]);
+  }, [config, showBanner, ws, onlineRoom]);
 
   // Open Quiz
   const interactTask = useCallback(() => {
@@ -280,11 +282,14 @@ export const GameScreen: React.FC<Props> = ({
     g.activeStationIndex = s.i;
 
     // Notify online server that player started task
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: 'player_update',
-        workUntil: me.workUntil
-      }));
+    if (onlineRoom) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'player_update',
+          workUntil: me.workUntil
+        }));
+      }
+      api.sendAction(onlineRoom.code, 'player_update', { workUntil: me.workUntil }).catch(() => {});
     }
 
     setActiveQuiz({
@@ -294,7 +299,7 @@ export const GameScreen: React.FC<Props> = ({
       answered: false,
       selectedIdx: null
     });
-  }, [getNextQuestion, ws]);
+  }, [getNextQuestion, ws, onlineRoom]);
 
   // Check Team Victory condition (Solo Mode)
   const checkGameEndCondition = useCallback(() => {
@@ -402,12 +407,18 @@ export const GameScreen: React.FC<Props> = ({
       me.completedBitmask |= (1 << activeQuiz.stationIndex);
       showBanner(`Benar! (${answerDuration} dtk). Kecepatan naik ke ${(getSpeed(me)/200).toFixed(2)}x!`);
 
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'task_completed',
+      if (onlineRoom) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'task_completed',
+            stationIndex: activeQuiz.stationIndex,
+            duration: answerDuration
+          }));
+        }
+        api.sendAction(onlineRoom.code, 'task_completed', {
           stationIndex: activeQuiz.stationIndex,
           duration: answerDuration
-        }));
+        }).catch(() => {});
       }
     } else {
       sounds.playWrong();
@@ -415,11 +426,16 @@ export const GameScreen: React.FC<Props> = ({
       me.lockedStations[activeQuiz.stationIndex] = g.t + 6;
       showBanner(`Kurang tepat! Stasiun terkunci selama 6 detik.`);
 
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: 'task_failed',
+      if (onlineRoom) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'task_failed',
+            stationIndex: activeQuiz.stationIndex
+          }));
+        }
+        api.sendAction(onlineRoom.code, 'task_failed', {
           stationIndex: activeQuiz.stationIndex
-        }));
+        }).catch(() => {});
       }
     }
 
@@ -428,11 +444,14 @@ export const GameScreen: React.FC<Props> = ({
       if (me) {
         me.workUntil = 0;
         me.invulnerableUntil = g.t + 1.5;
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'player_update',
-            workUntil: 0
-          }));
+        if (onlineRoom) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'player_update',
+              workUntil: 0
+            }));
+          }
+          api.sendAction(onlineRoom.code, 'player_update', { workUntil: 0 }).catch(() => {});
         }
       }
       g.activeStationIndex = null;
@@ -468,14 +487,17 @@ export const GameScreen: React.FC<Props> = ({
       }
     }
 
-    if (ws && ws.readyState === WebSocket.OPEN && target.isMe) {
-      ws.send(JSON.stringify({
-        type: 'player_hit'
-      }));
+    if (onlineRoom && target.isMe) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'player_hit'
+        }));
+      }
+      api.sendAction(onlineRoom.code, 'player_hit', {}).catch(() => {});
     }
 
     checkGameEndCondition();
-  }, [checkGameEndCondition, showBanner, ws]);
+  }, [checkGameEndCondition, showBanner, ws, onlineRoom]);
 
   // Main Effect: Init Game and NetSync
   useEffect(() => {
@@ -612,83 +634,127 @@ export const GameScreen: React.FC<Props> = ({
       );
     }
 
+    const lastEventIdRef = { current: 0 };
+
+    const processGameEvent = (type: string, payload: any) => {
+      if (type === 'player_moved') {
+        const p = g.players.find(x => x.id === payload.playerId);
+        if (p && !p.isMe) {
+          p.x = payload.x;
+          p.y = payload.y;
+          p.dir = payload.dir;
+          if (typeof payload.angle === 'number') p.angle = payload.angle;
+          if (typeof payload.workUntil === 'number') p.workUntil = payload.workUntil;
+          if (typeof payload.shieldEndTime === 'number') p.shieldEndTime = payload.shieldEndTime;
+        }
+      } else if (type === 'bullet_fired') {
+        const shooter = g.players.find(x => x.id === payload.shooterId);
+        if (shooter && !shooter.isMe) {
+          sounds.playShoot();
+          [-0.32, 0, 0.32].forEach(offset => {
+            g.bullets.push({
+              x: payload.x,
+              y: payload.y,
+              vx: Math.cos(payload.angle + offset) * 350,
+              vy: Math.sin(payload.angle + offset) * 350,
+              life: 1.2
+            });
+          });
+        }
+      } else if (type === 'shield_used') {
+        const p = g.players.find(x => x.id === payload.playerId);
+        if (p && !p.isMe) {
+          sounds.playShield();
+          p.shieldEndTime = payload.shieldEndTime;
+          p.shieldCooldownUntil = payload.shieldCooldownUntil;
+        }
+      } else if (type === 'task_progress') {
+        const p = g.players.find(x => x.id === payload.playerId);
+        if (p && !p.isMe) {
+          p.doneTasks = payload.doneTasks;
+          p.correctAnswers = payload.correctAnswers;
+          p.totalAttempts = payload.totalAttempts;
+          p.completedBitmask = payload.completedBitmask;
+        }
+        if (payload.message) showBanner(payload.message);
+      } else if (type === 'player_damaged') {
+        const p = g.players.find(x => x.id === payload.playerId);
+        if (p) {
+          p.hp = payload.hp;
+          sounds.playHit();
+        }
+        if (payload.message) showBanner(payload.message);
+      } else if (type === 'player_eliminated') {
+        const p = g.players.find(x => x.id === payload.playerId);
+        if (p) {
+          p.dead = true;
+          p.eliminatedAt = payload.eliminatedAt;
+          sounds.playHit();
+        }
+        if (payload.message) showBanner(payload.message);
+      } else if (type === 'game_over') {
+        g.over = true;
+        if (payload.summary) {
+          if (payload.summary.winnerTeam === 'crew') {
+            sounds.playVictory();
+          } else {
+            sounds.playDefeat();
+          }
+          saveMatchResult(payload.summary);
+          onGameOver(payload.summary);
+        }
+      }
+    };
+
     // WebSocket Incoming Message Handler
     if (ws) {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          
-          if (msg.type === 'player_moved') {
-            const p = g.players.find(x => x.id === msg.playerId);
-            if (p && !p.isMe) {
-              p.x = msg.x;
-              p.y = msg.y;
-              p.dir = msg.dir;
-              if (typeof msg.angle === 'number') p.angle = msg.angle;
-              if (typeof msg.workUntil === 'number') p.workUntil = msg.workUntil;
-              if (typeof msg.shieldEndTime === 'number') p.shieldEndTime = msg.shieldEndTime;
-            }
-          } else if (msg.type === 'bullet_fired') {
-            const shooter = g.players.find(x => x.id === msg.shooterId);
-            if (shooter && !shooter.isMe) {
-              sounds.playShoot();
-              [-0.32, 0, 0.32].forEach(offset => {
-                g.bullets.push({
-                  x: msg.x,
-                  y: msg.y,
-                  vx: Math.cos(msg.angle + offset) * 350,
-                  vy: Math.sin(msg.angle + offset) * 350,
-                  life: 1.2
-                });
-              });
-            }
-          } else if (msg.type === 'shield_used') {
-            const p = g.players.find(x => x.id === msg.playerId);
-            if (p && !p.isMe) {
-              sounds.playShield();
-              p.shieldEndTime = msg.shieldEndTime;
-              p.shieldCooldownUntil = msg.shieldCooldownUntil;
-            }
-          } else if (msg.type === 'task_progress') {
-            const p = g.players.find(x => x.id === msg.playerId);
-            if (p && !p.isMe) {
-              p.doneTasks = msg.doneTasks;
-              p.correctAnswers = msg.correctAnswers;
-              p.totalAttempts = msg.totalAttempts;
-              p.completedBitmask = msg.completedBitmask;
-            }
-            if (msg.message) showBanner(msg.message);
-          } else if (msg.type === 'player_damaged') {
-            const p = g.players.find(x => x.id === msg.playerId);
-            if (p) {
-              p.hp = msg.hp;
-              sounds.playHit();
-            }
-            if (msg.message) showBanner(msg.message);
-          } else if (msg.type === 'player_eliminated') {
-            const p = g.players.find(x => x.id === msg.playerId);
-            if (p) {
-              p.dead = true;
-              p.eliminatedAt = msg.eliminatedAt;
-              sounds.playHit();
-            }
-            if (msg.message) showBanner(msg.message);
-          } else if (msg.type === 'game_over') {
-            g.over = true;
-            if (msg.summary) {
-              if (msg.summary.winnerTeam === 'crew') {
-                sounds.playVictory();
-              } else {
-                sounds.playDefeat();
-              }
-              saveMatchResult(msg.summary);
-              onGameOver(msg.summary);
-            }
-          }
+          processGameEvent(msg.type, msg);
         } catch (e) {
           console.error('Error handling ws message in game', e);
         }
       };
+    }
+
+    // HTTP Background Polling Fallback (runs every 100ms when online)
+    let syncInterval: any = null;
+    if (onlineRoom) {
+      syncInterval = setInterval(async () => {
+        if (g.over) return;
+        try {
+          const data = await api.syncRoom(onlineRoom.code, lastEventIdRef.current);
+          if (data.lastEventId) lastEventIdRef.current = data.lastEventId;
+
+          if (Array.isArray(data.players)) {
+            data.players.forEach(remote => {
+              const local = g.players.find(p => p.id === remote.id);
+              if (local && !local.isMe) {
+                local.x = remote.x;
+                local.y = remote.y;
+                local.dir = remote.dir;
+                local.hp = remote.hp;
+                local.dead = remote.dead;
+                local.doneTasks = remote.doneTasks;
+                local.correctAnswers = remote.correctAnswers;
+                local.shieldEndTime = remote.shieldEndTime;
+                local.workUntil = remote.workUntil;
+              }
+            });
+          }
+
+          if (Array.isArray(data.events)) {
+            data.events.forEach(ev => {
+              processGameEvent(ev.type, ev.payload);
+            });
+          }
+
+          if (data.summary && !g.over) {
+            processGameEvent('game_over', { summary: data.summary });
+          }
+        } catch {}
+      }, 100);
     }
 
     // Keyboard handlers
@@ -877,20 +943,26 @@ export const GameScreen: React.FC<Props> = ({
           return true;
         });
 
-        // 4. WebSocket Throttled Position Broadcast (20Hz)
-        if (ws && ws.readyState === WebSocket.OPEN && g.myPlayer && !g.myPlayer.dead) {
+        // 4. Throttled Position Broadcast (20Hz)
+        if (onlineRoom && g.myPlayer && !g.myPlayer.dead) {
           const nowMs = performance.now();
           if (nowMs - g.lastNetSyncTime > 50) {
             g.lastNetSyncTime = nowMs;
-            ws.send(JSON.stringify({
-              type: 'player_update',
+            const payload = {
               x: Math.round(g.myPlayer.x),
               y: Math.round(g.myPlayer.y),
               dir: g.myPlayer.dir,
               angle: g.myPlayer.angle,
               workUntil: g.myPlayer.workUntil,
               shieldEndTime: g.myPlayer.shieldEndTime
-            }));
+            };
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: 'player_update',
+                ...payload
+              }));
+            }
+            api.sendAction(onlineRoom.code, 'player_update', payload).catch(() => {});
           }
         }
 
@@ -921,6 +993,7 @@ export const GameScreen: React.FC<Props> = ({
 
     return () => {
       cancelAnimationFrame(animId);
+      if (syncInterval) clearInterval(syncInterval);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       if (bannerTimeoutRef.current) clearTimeout(bannerTimeoutRef.current);
