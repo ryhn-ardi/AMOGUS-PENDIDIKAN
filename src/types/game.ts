@@ -10,6 +10,7 @@ export interface Question {
 export interface Player {
   id: string;
   name: string;
+  playerClass?: string; // Kelas siswa (contoh: "7A", "8-B", "Kelas 9")
   role: PlayerRole;
   color: string;
   x: number;
@@ -20,6 +21,8 @@ export interface Player {
   dead: boolean;
   isMe: boolean;
   isAI: boolean;
+  isHost?: boolean;
+  isSpectator?: boolean;
   eliminatedAt: number | null; // game time in seconds when player died
   survivedUntilEnd: boolean;
   
@@ -55,6 +58,8 @@ export interface TaskStation {
 }
 
 export interface GameBullet {
+  id?: string;
+  shooterId?: string;
   x: number;
   y: number;
   vx: number;
@@ -75,6 +80,7 @@ export interface GameConfig {
 export interface LeaderboardEntry {
   id: string;
   name: string;
+  playerClass?: string;
   role: PlayerRole;
   isMe: boolean;
   color: string;
@@ -100,4 +106,40 @@ export interface MatchSummary {
   totalImpostorCount: number;
   matchDuration: number;
   leaderboard: LeaderboardEntry[];
+}
+
+export interface OnlineRoomData {
+  code: string;
+  hostId: string;
+  hostName: string;
+  status: 'lobby' | 'playing' | 'ended';
+  config: GameConfig;
+  questions: Question[];
+  createdAt: number;
+}
+
+export interface ClientMessage {
+  type: string;
+  roomCode?: string;
+  name?: string;
+  playerClass?: string;
+  isSpectator?: boolean;
+  config?: GameConfig;
+  questions?: Question[];
+  payload?: any;
+}
+
+export interface ServerMessage {
+  type: string;
+  room?: OnlineRoomData;
+  players?: Player[];
+  player?: Player;
+  summary?: MatchSummary;
+  message?: string;
+  bullet?: GameBullet;
+  bulletId?: string;
+  targetId?: string;
+  error?: string;
+  stations?: TaskStation[];
+  gameTime?: number;
 }

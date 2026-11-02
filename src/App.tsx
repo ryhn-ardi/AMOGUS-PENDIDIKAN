@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { GameConfig, Question, MatchSummary } from './types/game';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { GameConfig, Question, MatchSummary, Player, OnlineRoomData, TaskStation } from './types/game';
 import { DEFAULT_QUESTIONS } from './data/defaultQuestions';
 import { GameScreen } from './components/GameScreen';
 import { QuestionEditor } from './components/QuestionEditor';
 import { LeaderboardModal } from './components/LeaderboardModal';
+import { OnlineLobby } from './components/OnlineLobby';
 import { getMatchHistory } from './utils/leaderboard';
 import { 
   Play, 
+  Users, 
   Eye, 
   BookOpen, 
   Trophy, 
@@ -16,23 +18,40 @@ import {
   Volume2, 
   VolumeX, 
   User, 
+  GraduationCap, 
   ChevronDown, 
   ChevronUp, 
-  Flame, 
-  Sparkles 
+  Sparkles,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import { sounds } from './utils/sound';
 
 export default function App() {
-  const [view, setView] = useState<'menu' | 'game' | 'editor'>('menu');
+  const [view, setView] = useState<'menu' | 'online_lobby' | 'game' | 'editor'>('menu');
   const [isSpectator, setIsSpectator] = useState<boolean>(false);
-  const [playerName, setPlayerName] = useState<string>('Detektif Kamu');
+  const [isOnlineMode, setIsOnlineMode] = useState<boolean>(false);
+  
+  // Student Identity: Nickname & Kelas
+  const [playerName, setPlayerName] = useState<string>('Budi');
+  const [playerClass, setPlayerClass] = useState<string>('7A');
+
   const [soundOn, setSoundOn] = useState<boolean>(true);
   const [showAdminConfig, setShowAdminConfig] = useState<boolean>(false);
 
   // Match Summary & Leaderboard State
   const [lastMatchSummary, setLastMatchSummary] = useState<MatchSummary | null>(null);
   const [showLeaderboard, setShowLeaderboard] = useState<boolean>(false);
+
+  // Online Multiplayer State
+  const wsRef = useRef<WebSocket | null>(null);
+  const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [onlineRoom, setOnlineRoom] = useState<OnlineRoomData | null>(null);
+  const [roomPlayers, setRoomPlayers] = useState<Player[]>([]);
+  const [myPlayer, setMyPlayer] = useState<Player | null>(null);
+  const [initialOnlineStations, setInitialOnlineStations] = useState<TaskStation[]>([]);
+  const [chatMessages, setChatMessages] = useState<Array<{ senderName: string; senderClass?: string; senderColor: string; text: string; time: string }>>([]);
+  const [onlineError, setOnlineError] = useState<string>('');
 
   // Game Configuration
   const [config, setConfig] = useState<GameConfig>({
@@ -57,19 +76,107 @@ export default function App() {
     return DEFAULT_QUESTIONS;
   });
 
-  // Load saved configurations on mount
+  // WebSocket Connection Management
+  const connectWebSocket = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+    try {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsConnected(true);
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        // Attempt reconnect after delay if not explicitly unmounted
+        setTimeout(() => {
+          if (wsRef.current === ws) {
+            connectWebSocket();
+          }
+        }, 3000);
+      };
+
+      ws.onerror = () => {
+        setWsConnected(false);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+
+          if (msg.type === 'room_created' || msg.type === 'room_joined') {
+            setOnlineRoom(msg.room);
+            setRoomPlayers(msg.players || []);
+            setMyPlayer(msg.myPlayer || null);
+            setOnlineError('');
+            setView('online_lobby');
+          } else if (msg.type === 'player_joined') {
+            setRoomPlayers(msg.players || []);
+            if (msg.message) {
+              sounds.playClick();
+            }
+          } else if (msg.type === 'player_left') {
+            setRoomPlayers(msg.players || []);
+          } else if (msg.type === 'game_started') {
+            setOnlineRoom(msg.room);
+            setRoomPlayers(msg.players || []);
+            setInitialOnlineStations(msg.stations || []);
+            setIsOnlineMode(true);
+            setView('game');
+          } else if (msg.type === 'chat_broadcast') {
+            setChatMessages(prev => [...prev.slice(-30), msg]);
+          } else if (msg.type === 'game_over') {
+            if (msg.summary) {
+              setLastMatchSummary(msg.summary);
+              setShowLeaderboard(true);
+            }
+          } else if (msg.type === 'returned_to_lobby') {
+            setOnlineRoom(msg.room);
+            setRoomPlayers(msg.players || []);
+            setShowLeaderboard(false);
+            setView('online_lobby');
+          } else if (msg.type === 'error') {
+            setOnlineError(msg.message || 'Terjadi kesalahan pada server room.');
+            setTimeout(() => setOnlineError(''), 4000);
+          }
+        } catch (e) {
+          console.error('Error handling WebSocket message', e);
+        }
+      };
+    } catch (e) {
+      console.error('Failed to instantiate WebSocket', e);
+    }
+  }, []);
+
   useEffect(() => {
+    connectWebSocket();
+
+    // Load saved preferences
     try {
       const savedConfig = localStorage.getItem('dk_cf_v2');
       if (savedConfig) {
         setConfig(prev => ({ ...prev, ...JSON.parse(savedConfig) }));
       }
       const savedName = localStorage.getItem('dk_player_name');
-      if (savedName) {
-        setPlayerName(savedName);
-      }
+      if (savedName) setPlayerName(savedName);
+      const savedClass = localStorage.getItem('dk_player_class');
+      if (savedClass) setPlayerClass(savedClass);
     } catch {}
-  }, []);
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [connectWebSocket]);
 
   const handleSaveQuestions = (newQuestions: Question[]) => {
     setQuestions(newQuestions);
@@ -96,14 +203,98 @@ export default function App() {
     } catch {}
   };
 
+  const handleClassChange = (cls: string) => {
+    const clean = cls.slice(0, 16);
+    setPlayerClass(clean);
+    try {
+      localStorage.setItem('dk_player_class', clean);
+    } catch {}
+  };
+
+  // Online Room Actions
+  const handleCreateRoom = (
+    customCode: string,
+    name: string,
+    cls: string,
+    hostConfig: GameConfig,
+    qs: Question[],
+    spectator: boolean
+  ) => {
+    handleNameChange(name);
+    handleClassChange(cls);
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      connectWebSocket();
+      return;
+    }
+    wsRef.current.send(JSON.stringify({
+      type: 'create_room',
+      roomCode: customCode,
+      name,
+      playerClass: cls,
+      config: hostConfig,
+      questions: qs,
+      isSpectator: spectator
+    }));
+  };
+
+  const handleJoinRoom = (code: string, name: string, cls: string, spectator: boolean) => {
+    handleNameChange(name);
+    handleClassChange(cls);
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      connectWebSocket();
+      return;
+    }
+    wsRef.current.send(JSON.stringify({
+      type: 'join_room',
+      roomCode: code,
+      name,
+      playerClass: cls,
+      isSpectator: spectator
+    }));
+  };
+
+  const handleStartOnlineGame = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      sounds.playClick();
+      wsRef.current.send(JSON.stringify({
+        type: 'start_game'
+      }));
+    }
+  };
+
+  const handleLeaveOnlineRoom = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'leave_room'
+      }));
+    }
+    setOnlineRoom(null);
+    setRoomPlayers([]);
+    setMyPlayer(null);
+    setIsOnlineMode(false);
+    setView('menu');
+  };
+
+  const handleSendChat = (text: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'chat_message',
+        text
+      }));
+    }
+  };
+
+  // Solo & Offline Fallbacks
   const startSoloGame = () => {
     sounds.playClick();
+    setIsOnlineMode(false);
     setIsSpectator(false);
     setView('game');
   };
 
-  const startSpectatorGame = () => {
+  const startSpectatorSolo = () => {
     sounds.playClick();
+    setIsOnlineMode(false);
     setIsSpectator(true);
     setView('game');
   };
@@ -119,13 +310,12 @@ export default function App() {
     if (history.length > 0) {
       setLastMatchSummary(history[0]);
     } else {
-      // Mock / initial showcase leaderboard if no games played yet
       setLastMatchSummary({
         id: 'initial',
         date: 'Baru saja',
         winnerTeam: 'crew',
         winnerTitle: '🏆 TIM DETEKTIF / KRU MENANG!',
-        reason: 'Selesaikan pertandingan pertamamu untuk mencatat rekor skor dan waktu bertahan!',
+        reason: 'Selesaikan pertandingan pertamamu bersama teman sekelas untuk mencatat rekor!',
         survivingCrewCount: 4,
         totalCrewCount: 4,
         survivingImpostorCount: 0,
@@ -135,6 +325,7 @@ export default function App() {
           {
             id: 'demo-1',
             name: playerName || 'Kamu',
+            playerClass: playerClass || '7A',
             role: 'crew',
             isMe: true,
             color: '#4aa3df',
@@ -149,7 +340,8 @@ export default function App() {
           },
           {
             id: 'demo-2',
-            name: 'Budi',
+            name: 'Rani',
+            playerClass: '7B',
             role: 'crew',
             isMe: false,
             color: '#e8a33d',
@@ -165,6 +357,7 @@ export default function App() {
           {
             id: 'demo-3',
             name: 'Penyusup Hitam',
+            playerClass: 'Penyusup',
             role: 'impostor',
             isMe: false,
             color: '#e0463c',
@@ -189,18 +382,44 @@ export default function App() {
       {/* Top Navbar */}
       <header className="border-b border-[#335a49] bg-[#1d3a2f]/80 backdrop-blur px-4 sm:px-8 py-3.5 flex items-center justify-between">
         <div 
-          onClick={() => setView('menu')}
+          onClick={() => {
+            if (onlineRoom) {
+              setView('online_lobby');
+            } else {
+              setView('menu');
+            }
+          }}
           className="flex items-center gap-2 cursor-pointer hover:opacity-90 transition-opacity"
         >
           <div className="w-8 h-8 rounded-xl bg-[#f5d547] text-[#14261f] flex items-center justify-center font-display font-bold text-lg shadow">
             DK
           </div>
-          <span className="font-display font-bold text-lg sm:text-xl text-[#f5d547] tracking-tight">
-            Detektif Kelas
-          </span>
+          <div>
+            <span className="font-display font-bold text-lg sm:text-xl text-[#f5d547] tracking-tight">
+              Detektif Kelas
+            </span>
+            <span className="hidden sm:inline-block ml-2 text-[11px] text-[#a9bdb2] font-semibold bg-[#14261f] px-2 py-0.5 rounded-full border border-[#335a49]">
+              Online Multiplayer
+            </span>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
+          {/* Status Koneksi Online */}
+          <div className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg bg-[#14261f] border border-[#335a49]">
+            {wsConnected ? (
+              <span className="flex items-center gap-1 text-[#6fd08c] font-medium">
+                <Wifi className="w-3.5 h-3.5" />
+                Server Online
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-[#ef6b5b]">
+                <WifiOff className="w-3.5 h-3.5" />
+                Menghubungkan...
+              </span>
+            )}
+          </div>
+
           <button
             onClick={openGlobalLeaderboard}
             className="px-3 py-1.5 rounded-xl bg-[#14261f] border border-[#335a49] text-xs font-semibold text-[#f5d547] hover:bg-[#25493b] transition-colors flex items-center gap-1.5 shadow-sm"
@@ -220,18 +439,25 @@ export default function App() {
         </div>
       </header>
 
+      {/* Pesan Kesalahan Online (jika ada) */}
+      {onlineError && (
+        <div className="bg-[#ef6b5b] text-[#2b0d08] px-4 py-2 text-center text-xs sm:text-sm font-bold shadow animate-in fade-in">
+          {onlineError}
+        </div>
+      )}
+
       {/* Main Container */}
       <main className="flex-1 flex flex-col justify-center p-3 sm:p-6 max-w-6xl w-full mx-auto">
         
         {/* VIEW 1: Main Menu */}
         {view === 'menu' && (
-          <div className="max-w-2xl mx-auto w-full text-center space-y-6 py-6 animate-in fade-in duration-300">
+          <div className="max-w-2xl mx-auto w-full text-center space-y-6 py-4 animate-in fade-in duration-300">
             
             {/* Title & Badge */}
             <div className="space-y-3">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-[#1d3a2f] border border-[#335a49] text-[#f5d547]">
                 <Sparkles className="w-3.5 h-3.5" />
-                Game Edukasi Survival &amp; Logika Tim
+                Game Survival Kuis Tim Sekolah Berbasis Online
               </div>
 
               <h1 className="text-4xl sm:text-6xl font-display font-bold text-[#f5d547] tracking-tight -rotate-1 drop-shadow-md">
@@ -239,40 +465,67 @@ export default function App() {
               </h1>
 
               <p className="text-sm sm:text-base text-[#a9bdb2] max-w-md mx-auto leading-relaxed">
-                Ada penyusup berkeliaran di sekolah! Kerjakan soal di stasiun tugas, bertahan bersama rekan detektif, dan buktikan siapa yang bertahan paling akhir.
+                Bergabunglah bersama teman sekelas dengan nickname &amp; kelasmu. Selesaikan stasiun soal, bertahankah tim kru, atau penyusup yang akan menang?
               </p>
             </div>
 
-            {/* Nama Pemain Input */}
-            <div className="bg-[#1d3a2f] border-2 border-[#335a49] rounded-2xl p-4 max-w-md mx-auto flex items-center gap-3">
-              <User className="w-5 h-5 text-[#f5d547] shrink-0" />
-              <div className="flex-1 text-left">
-                <label className="block text-[11px] font-semibold text-[#a9bdb2] uppercase tracking-wider">
-                  Nama Detektif
+            {/* Identitas Siswa: Nama & Kelas */}
+            <div className="bg-[#1d3a2f] border-2 border-[#335a49] rounded-2xl p-4 max-w-md mx-auto grid grid-cols-2 gap-3 text-left shadow-lg">
+              <div>
+                <label className="block text-[11px] font-semibold text-[#a9bdb2] uppercase tracking-wider mb-1 flex items-center gap-1">
+                  <User className="w-3.5 h-3.5 text-[#f5d547]" />
+                  Nickname
                 </label>
                 <input
                   type="text"
                   value={playerName}
                   onChange={(e) => handleNameChange(e.target.value)}
-                  placeholder="Ketik nama panggilan..."
-                  className="w-full bg-transparent text-[#f3efdc] font-semibold text-sm focus:outline-none placeholder:text-[#a9bdb2]/50"
+                  placeholder="Nama panggilan..."
+                  className="w-full bg-[#14261f] border border-[#335a49] rounded-xl px-3 py-2 text-sm text-[#f3efdc] font-semibold focus:outline-none focus:border-[#f5d547]"
+                  maxLength={16}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#a9bdb2] uppercase tracking-wider mb-1 flex items-center gap-1">
+                  <GraduationCap className="w-3.5 h-3.5 text-[#f5d547]" />
+                  Kelas
+                </label>
+                <input
+                  type="text"
+                  value={playerClass}
+                  onChange={(e) => handleClassChange(e.target.value)}
+                  placeholder="Contoh: 7A, 8B"
+                  className="w-full bg-[#14261f] border border-[#335a49] rounded-xl px-3 py-2 text-sm text-[#f3efdc] font-semibold focus:outline-none focus:border-[#f5d547]"
                   maxLength={16}
                 />
               </div>
             </div>
 
-            {/* Action Buttons */}
+            {/* Primary Action Buttons */}
             <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+              {/* Main Online Button (Paling Diutamakan) */}
               <button
-                onClick={startSoloGame}
-                className="px-6 py-3.5 rounded-2xl bg-[#f5d547] text-[#14261f] font-display font-bold text-base sm:text-lg hover:bg-[#fad85e] hover:scale-105 active:scale-95 transition-all shadow-xl flex items-center gap-2"
+                onClick={() => {
+                  sounds.playClick();
+                  setView('online_lobby');
+                }}
+                className="w-full sm:w-auto px-7 py-3.5 rounded-2xl bg-[#f5d547] text-[#14261f] font-display font-bold text-base sm:text-lg hover:bg-[#fad85e] hover:scale-105 active:scale-95 transition-all shadow-xl flex items-center justify-center gap-2 border-2 border-[#14261f]"
               >
-                <Play className="w-5 h-5 fill-current" />
-                Main Solo Detektif
+                <Users className="w-5 h-5" />
+                Masuk Game Online (Multiplayer Kelas)
               </button>
 
               <button
-                onClick={startSpectatorGame}
+                onClick={startSoloGame}
+                className="px-5 py-3 rounded-2xl bg-[#1d3a2f] text-[#f3efdc] border-2 border-[#335a49] hover:bg-[#25493b] font-display font-bold text-sm sm:text-base transition-all flex items-center gap-2 shadow"
+              >
+                <Play className="w-4 h-4 text-[#6fd08c] fill-current" />
+                Latihan Solo
+              </button>
+
+              <button
+                onClick={startSpectatorSolo}
                 className="px-5 py-3 rounded-2xl bg-[#1d3a2f] text-[#f3efdc] border-2 border-[#335a49] hover:bg-[#25493b] font-display font-bold text-sm sm:text-base transition-all flex items-center gap-2 shadow"
               >
                 <Eye className="w-4 h-4 text-[#7fdcff]" />
@@ -286,109 +539,6 @@ export default function App() {
                 <BookOpen className="w-4 h-4 text-[#6fd08c]" />
                 Bank Soal ({questions.length})
               </button>
-
-              <button
-                onClick={openGlobalLeaderboard}
-                className="px-5 py-3 rounded-2xl bg-[#1d3a2f] text-[#f3efdc] border-2 border-[#335a49] hover:bg-[#25493b] font-display font-bold text-sm sm:text-base transition-all flex items-center gap-2 shadow"
-              >
-                <Trophy className="w-4 h-4 text-[#f5d547]" />
-                Leaderboard
-              </button>
-            </div>
-
-            {/* Pengaturan Cepat Permainan */}
-            <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-6 pt-4 text-xs sm:text-sm text-[#a9bdb2]">
-              <label className="flex items-center gap-2 bg-[#1d3a2f] px-3.5 py-2 rounded-xl border border-[#335a49]">
-                <Skull className="w-4 h-4 text-[#ef6b5b]" />
-                <span>Penyusup:</span>
-                <select
-                  value={config.impostorsCount}
-                  onChange={(e) => handleUpdateConfig('impostorsCount', parseInt(e.target.value))}
-                  className="bg-[#14261f] text-[#f3efdc] border border-[#335a49] rounded-lg px-2 py-1 font-semibold focus:outline-none"
-                >
-                  <option value={1}>1 Penyusup</option>
-                  <option value={2}>2 Penyusup (Standar)</option>
-                  <option value={3}>3 Penyusup (Sulit)</option>
-                </select>
-              </label>
-
-              <label className="flex items-center gap-2 bg-[#1d3a2f] px-3.5 py-2 rounded-xl border border-[#335a49]">
-                <Shield className="w-4 h-4 text-[#6fd08c]" />
-                <span>Nyawa Kru:</span>
-                <select
-                  value={config.crewLives}
-                  onChange={(e) => handleUpdateConfig('crewLives', parseInt(e.target.value))}
-                  className="bg-[#14261f] text-[#f3efdc] border border-[#335a49] rounded-lg px-2 py-1 font-semibold focus:outline-none"
-                >
-                  <option value={2}>2 Nyawa</option>
-                  <option value={3}>3 Nyawa</option>
-                  <option value={5}>5 Nyawa</option>
-                </select>
-              </label>
-            </div>
-
-            {/* Pengaturan Lanjutan / Admin */}
-            <div className="max-w-md mx-auto pt-2">
-              <button
-                onClick={() => setShowAdminConfig(!showAdminConfig)}
-                className="text-xs font-semibold text-[#a9bdb2] hover:text-[#f3efdc] flex items-center justify-center gap-1.5 mx-auto transition-colors"
-              >
-                <Settings className="w-3.5 h-3.5" />
-                <span>Pengaturan Keseimbangan Game</span>
-                {showAdminConfig ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              </button>
-
-              {showAdminConfig && (
-                <div className="mt-3 p-4 bg-[#1d3a2f] border border-[#335a49] rounded-2xl text-left space-y-3 text-xs animate-in fade-in duration-150">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[#a9bdb2]">Durasi Tameng (detik):</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={15}
-                      value={config.shieldDuration}
-                      onChange={(e) => handleUpdateConfig('shieldDuration', Math.max(1, parseInt(e.target.value) || 1))}
-                      className="w-16 bg-[#14261f] border border-[#335a49] rounded-lg px-2 py-1 text-center font-bold"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <span className="text-[#a9bdb2]">Cooldown Tameng (detik):</span>
-                    <input
-                      type="number"
-                      min={3}
-                      max={60}
-                      value={config.shieldCooldown}
-                      onChange={(e) => handleUpdateConfig('shieldCooldown', Math.max(3, parseInt(e.target.value) || 3))}
-                      className="w-16 bg-[#14261f] border border-[#335a49] rounded-lg px-2 py-1 text-center font-bold"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <span className="text-[#a9bdb2]">Jeda Tembakan Penyusup (detik):</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={20}
-                      value={config.impostorShotCooldown}
-                      onChange={(e) => handleUpdateConfig('impostorShotCooldown', Math.max(1, parseInt(e.target.value) || 1))}
-                      className="w-16 bg-[#14261f] border border-[#335a49] rounded-lg px-2 py-1 text-center font-bold"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <span className="text-[#a9bdb2]">Tambahan Kecepatan per Soal (%):</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={40}
-                      value={config.speedBoostPerTask}
-                      onChange={(e) => handleUpdateConfig('speedBoostPerTask', Math.max(0, parseInt(e.target.value) || 0))}
-                      className="w-16 bg-[#14261f] border border-[#335a49] rounded-lg px-2 py-1 text-center font-bold"
-                    />
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Aturan Kemenangan Tim & Leaderboard Ringkas */}
@@ -401,19 +551,56 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 2: In-Game Canvas */}
+        {/* VIEW 2: Online Lobby (Multiplayer Room) */}
+        {view === 'online_lobby' && (
+          <OnlineLobby
+            ws={wsRef.current}
+            onlineRoom={onlineRoom}
+            roomPlayers={roomPlayers}
+            myPlayer={myPlayer}
+            defaultName={playerName}
+            defaultClass={playerClass}
+            questions={questions}
+            config={config}
+            onJoinRoom={handleJoinRoom}
+            onCreateRoom={handleCreateRoom}
+            onStartGame={handleStartOnlineGame}
+            onLeaveRoom={handleLeaveOnlineRoom}
+            onBackToMenu={() => setView('menu')}
+            chatMessages={chatMessages}
+            onSendChat={handleSendChat}
+          />
+        )}
+
+        {/* VIEW 3: In-Game Canvas (Online or Solo) */}
         {view === 'game' && (
           <GameScreen
             questions={questions}
             config={config}
             isSpectator={isSpectator}
             playerName={playerName}
+            playerClass={playerClass}
+            ws={isOnlineMode ? wsRef.current : null}
+            onlineRoom={isOnlineMode ? onlineRoom : null}
+            initialOnlinePlayers={isOnlineMode ? roomPlayers : undefined}
+            initialStations={isOnlineMode ? initialOnlineStations : undefined}
+            myPlayerId={myPlayer?.id}
             onGameOver={handleGameOver}
-            onExit={() => setView('menu')}
+            onExit={() => {
+              if (isOnlineMode) {
+                if (onlineRoom?.hostId === myPlayer?.id && wsRef.current) {
+                  wsRef.current.send(JSON.stringify({ type: 'return_to_lobby' }));
+                } else {
+                  handleLeaveOnlineRoom();
+                }
+              } else {
+                setView('menu');
+              }
+            }}
           />
         )}
 
-        {/* VIEW 3: Question Editor */}
+        {/* VIEW 4: Question Editor */}
         {view === 'editor' && (
           <QuestionEditor
             questions={questions}
@@ -430,18 +617,29 @@ export default function App() {
           summary={lastMatchSummary}
           onPlayAgain={() => {
             setShowLeaderboard(false);
-            setView('game');
+            if (isOnlineMode) {
+              if (onlineRoom?.hostId === myPlayer?.id && wsRef.current) {
+                wsRef.current.send(JSON.stringify({ type: 'return_to_lobby' }));
+              }
+              setView('online_lobby');
+            } else {
+              setView('game');
+            }
           }}
           onBackToMenu={() => {
             setShowLeaderboard(false);
-            setView('menu');
+            if (isOnlineMode) {
+              handleLeaveOnlineRoom();
+            } else {
+              setView('menu');
+            }
           }}
         />
       )}
 
       {/* Footer */}
       <footer className="border-t border-[#335a49]/60 px-4 py-3 text-center text-xs text-[#a9bdb2]">
-        Detektif Kelas · Game Survival Kuis Edukasi &amp; Papan Peringkat Kompetitif
+        Detektif Kelas · Game Survival Kuis Edukasi &amp; Papan Peringkat Kompetitif Berbasis Online
       </footer>
 
     </div>

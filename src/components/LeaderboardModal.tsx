@@ -169,8 +169,11 @@ export const LeaderboardModal: React.FC<Props> = ({ summary, onPlayAgain, onBack
                   >
                     {topThree[1].name.slice(0, 2).toUpperCase()}
                   </div>
-                  <span className="font-semibold text-xs truncate max-w-[90px]">{topThree[1].name} {topThree[1].isMe && "(Kamu)"}</span>
-                  <span className="text-[11px] text-[#a9bdb2]">{topThree[1].role === 'crew' ? 'Kru' : 'Penyusup'}</span>
+                  <span className="font-semibold text-xs truncate max-w-[100px]">{topThree[1].name} {topThree[1].isMe && "(Kamu)"}</span>
+                  <span className="text-[11px] text-[#a9bdb2]">
+                    {topThree[1].playerClass ? `Kelas ${topThree[1].playerClass} · ` : ''}
+                    {topThree[1].role === 'crew' ? 'Kru' : 'Penyusup'}
+                  </span>
                   <span className="text-xs font-bold text-[#f5d547] mt-1 tabular-nums">
                     {activeSort === 'score' ? `${topThree[1].scoreTasks} Soal` : 
                      activeSort === 'survival' ? formatDuration(topThree[1].survivalTime) : 
@@ -190,10 +193,13 @@ export const LeaderboardModal: React.FC<Props> = ({ summary, onPlayAgain, onBack
                   >
                     {topThree[0].name.slice(0, 2).toUpperCase()}
                   </div>
-                  <span className="font-bold text-sm truncate max-w-[100px] text-[#f5d547]">
+                  <span className="font-bold text-sm truncate max-w-[120px] text-[#f5d547]">
                     {topThree[0].name} {topThree[0].isMe && "(Kamu)"}
                   </span>
-                  <span className="text-[11px] text-[#6fd08c]">{topThree[0].role === 'crew' ? 'Kru Detektif' : 'Penyusup'}</span>
+                  <span className="text-[11px] text-[#6fd08c]">
+                    {topThree[0].playerClass ? `Kelas ${topThree[0].playerClass} · ` : ''}
+                    {topThree[0].role === 'crew' ? 'Kru Detektif' : 'Penyusup'}
+                  </span>
                   <span className="text-sm font-bold text-[#f5d547] mt-1 tabular-nums">
                     {activeSort === 'score' ? `${topThree[0].scoreTasks} Soal Benar` : 
                      activeSort === 'survival' ? `${formatDuration(topThree[0].survivalTime)} Bertahan` : 
@@ -213,8 +219,11 @@ export const LeaderboardModal: React.FC<Props> = ({ summary, onPlayAgain, onBack
                   >
                     {topThree[2].name.slice(0, 2).toUpperCase()}
                   </div>
-                  <span className="font-semibold text-xs truncate max-w-[90px]">{topThree[2].name} {topThree[2].isMe && "(Kamu)"}</span>
-                  <span className="text-[11px] text-[#a9bdb2]">{topThree[2].role === 'crew' ? 'Kru' : 'Penyusup'}</span>
+                  <span className="font-semibold text-xs truncate max-w-[100px]">{topThree[2].name} {topThree[2].isMe && "(Kamu)"}</span>
+                  <span className="text-[11px] text-[#a9bdb2]">
+                    {topThree[2].playerClass ? `Kelas ${topThree[2].playerClass} · ` : ''}
+                    {topThree[2].role === 'crew' ? 'Kru' : 'Penyusup'}
+                  </span>
                   <span className="text-xs font-bold text-[#f5d547] mt-1 tabular-nums">
                     {activeSort === 'score' ? `${topThree[2].scoreTasks} Soal` : 
                      activeSort === 'survival' ? formatDuration(topThree[2].survivalTime) : 
@@ -287,6 +296,11 @@ export const LeaderboardModal: React.FC<Props> = ({ summary, onPlayAgain, onBack
                             )}
                             <div className="text-[11px] text-[#a9bdb2]">
                               {player.role === 'crew' ? 'Detektif Kru' : 'Penyusup'}
+                              {player.playerClass && (
+                                <span className="ml-1 text-[#f3efdc]/80 font-medium">
+                                  · Kelas {player.playerClass}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>

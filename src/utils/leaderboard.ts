@@ -30,6 +30,7 @@ export function calculateLeaderboard(players: Player[], matchDuration: number): 
     return {
       id: player.id,
       name: player.name,
+      playerClass: player.playerClass,
       role: player.role,
       isMe: player.isMe,
       color: player.color,

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Player, Question, TaskStation, GameBullet, GameConfig, MatchSummary } from '../types/game';
+import { Player, Question, TaskStation, GameBullet, GameConfig, MatchSummary, OnlineRoomData } from '../types/game';
 import { sounds } from '../utils/sound';
-import { calculateLeaderboard, saveMatchResult, formatDuration } from '../utils/leaderboard';
+import { calculateLeaderboard, saveMatchResult } from '../utils/leaderboard';
 import { Shield, Skull, Eye, Volume2, VolumeX, LogOut, CheckCircle, Zap } from 'lucide-react';
 
 interface Props {
@@ -9,6 +9,12 @@ interface Props {
   config: GameConfig;
   isSpectator: boolean;
   playerName: string;
+  playerClass?: string;
+  ws?: WebSocket | null;
+  onlineRoom?: OnlineRoomData | null;
+  initialOnlinePlayers?: Player[];
+  initialStations?: TaskStation[];
+  myPlayerId?: string;
   onGameOver: (summary: MatchSummary) => void;
   onExit: () => void;
 }
@@ -54,6 +60,7 @@ const IP: [number, number][] = [
 ];
 
 const BOT_CREW_NAMES = ["Rani", "Budi", "Sari", "Dimas", "Alya", "Reza", "Putri", "Gilang"];
+const BOT_CLASSES = ["7A", "7B", "8A", "8B", "9A", "9C"];
 const BOT_IMP_NAMES = ["Bayangan", "Penyusup Hitam", "Hantu Sekolah", "Mr. X"];
 const CREW_COLORS = ["#4aa3df", "#e8a33d", "#b57edc", "#5cc98a", "#4dd0c4", "#f08ca8", "#8fb4ff", "#c5e063"];
 
@@ -62,12 +69,18 @@ export const GameScreen: React.FC<Props> = ({
   config,
   isSpectator,
   playerName,
+  playerClass = 'Umum',
+  ws = null,
+  onlineRoom = null,
+  initialOnlinePlayers,
+  initialStations,
+  myPlayerId,
   onGameOver,
   onExit
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // React state for HUD and UI overlays
+  // HUD state
   const [hudLives, setHudLives] = useState<number>(config.crewLives);
   const [hudRoom, setHudRoom] = useState<string>("Aula");
   const [hudSpeed, setHudSpeed] = useState<string>("x1.00");
@@ -89,12 +102,12 @@ export const GameScreen: React.FC<Props> = ({
   // Spectator target view
   const [spectatorTargetId, setSpectatorTargetId] = useState<string | null>(null);
 
-  // Counts of surviving team members
+  // Surviving counts
   const [survivingCrew, setSurvivingCrew] = useState<number>(4);
   const [survivingImps, setSurvivingImps] = useState<number>(config.impostorsCount);
   const [totalCrew, setTotalCrew] = useState<number>(4);
 
-  // Game internal mutable ref to prevent React re-renders from degrading 60fps loop
+  // Mutable Game Loop State
   const gameRef = useRef<{
     t: number;
     over: boolean;
@@ -106,6 +119,7 @@ export const GameScreen: React.FC<Props> = ({
     deck: number[];
     quizStartTime: number;
     activeStationIndex: number | null;
+    lastNetSyncTime: number;
   }>({
     t: 0,
     over: false,
@@ -116,17 +130,17 @@ export const GameScreen: React.FC<Props> = ({
     keys: {},
     deck: [],
     quizStartTime: 0,
-    activeStationIndex: null
+    activeStationIndex: null,
+    lastNetSyncTime: 0
   });
 
   const bannerTimeoutRef = useRef<any>(null);
   const showBanner = useCallback((text: string) => {
     setBannerMsg(text);
     if (bannerTimeoutRef.current) clearTimeout(bannerTimeoutRef.current);
-    bannerTimeoutRef.current = setTimeout(() => setBannerMsg(""), 2800);
+    bannerTimeoutRef.current = setTimeout(() => setBannerMsg(""), 3000);
   }, []);
 
-  // Shuffle helper
   const shuffle = <T,>(arr: T[]): T[] => {
     const a = [...arr];
     for (let i = a.length - 1; i > 0; i--) {
@@ -145,7 +159,6 @@ export const GameScreen: React.FC<Props> = ({
     return questions[idx % questions.length] || questions[0];
   }, [questions]);
 
-  // Collision detection with walls
   const isWallHit = (x: number, y: number, r: number) => {
     for (const w of BASE_WALLS) {
       const cx = Math.max(w[0], Math.min(x, w[0] + w[2]));
@@ -172,7 +185,6 @@ export const GameScreen: React.FC<Props> = ({
     return p.workUntil > t || p.invulnerableUntil > t || p.shieldEndTime > t;
   };
 
-  // Find nearest station
   const findNearStation = (p: Player, t: number): TaskStation | null => {
     let closest: TaskStation | null = null;
     let minDist = 65;
@@ -188,7 +200,7 @@ export const GameScreen: React.FC<Props> = ({
     return closest;
   };
 
-  // Skill trigger
+  // Skill Trigger
   const triggerSkill = useCallback((p: Player) => {
     const g = gameRef.current;
     if (!p || p.dead || g.over || p.workUntil > g.t) return;
@@ -198,7 +210,6 @@ export const GameScreen: React.FC<Props> = ({
       sounds.playShoot();
       p.shootCooldownUntil = g.t + config.impostorShotCooldown;
 
-      // Target closest crew
       let target: { x: number; y: number } | null = null;
       let minDist = 520;
       for (const other of g.players) {
@@ -214,7 +225,7 @@ export const GameScreen: React.FC<Props> = ({
         ? Math.atan2(target.y - p.y, target.x - p.x)
         : (p.angle || 0);
 
-      // 3 spread bullets
+      // Spawn bullets locally
       [-0.32, 0, 0.32].forEach(offset => {
         g.bullets.push({
           x: p.x,
@@ -224,19 +235,34 @@ export const GameScreen: React.FC<Props> = ({
           life: 1.2
         });
       });
+
+      // If online, broadcast to other players
+      if (ws && ws.readyState === WebSocket.OPEN && p.isMe) {
+        ws.send(JSON.stringify({
+          type: 'shoot_bullet',
+          angle
+        }));
+      }
     } else {
-      // Crew protective shield
+      // Crew Shield
       if (g.t < p.shieldCooldownUntil) return;
       sounds.playShield();
       p.shieldEndTime = g.t + config.shieldDuration;
       p.shieldCooldownUntil = g.t + Math.max(config.shieldCooldown, config.shieldDuration);
+
       if (p.isMe) {
         showBanner("Tameng aktif! Kebal dari serangan selama " + config.shieldDuration + " detik.");
       }
-    }
-  }, [config, showBanner]);
 
-  // Open Quiz at Station
+      if (ws && ws.readyState === WebSocket.OPEN && p.isMe) {
+        ws.send(JSON.stringify({
+          type: 'use_shield'
+        }));
+      }
+    }
+  }, [config, showBanner, ws]);
+
+  // Open Quiz
   const interactTask = useCallback(() => {
     const g = gameRef.current;
     if (g.over) return;
@@ -249,9 +275,17 @@ export const GameScreen: React.FC<Props> = ({
     const q = getNextQuestion();
     const shuffled = shuffle(q.o.map((text, origIdx) => ({ text, origIdx })));
 
-    me.workUntil = Infinity; // safe while answering
+    me.workUntil = Infinity;
     g.quizStartTime = performance.now();
     g.activeStationIndex = s.i;
+
+    // Notify online server that player started task
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'player_update',
+        workUntil: me.workUntil
+      }));
+    }
 
     setActiveQuiz({
       stationIndex: s.i,
@@ -260,58 +294,15 @@ export const GameScreen: React.FC<Props> = ({
       answered: false,
       selectedIdx: null
     });
-  }, [getNextQuestion]);
+  }, [getNextQuestion, ws]);
 
-  // Answer Quiz Option
-  const handleAnswerOption = (selectedItemIdx: number) => {
-    if (!activeQuiz || activeQuiz.answered) return;
-    const g = gameRef.current;
-    const me = g.myPlayer;
-    if (!me) return;
-
-    const answerDuration = Number(((performance.now() - g.quizStartTime) / 1000).toFixed(1));
-    me.taskDurations.push(answerDuration);
-    me.totalAttempts++;
-
-    const isCorrect = activeQuiz.shuffledOptions[selectedItemIdx].origIdx === activeQuiz.question.a;
-
-    setActiveQuiz(prev => prev ? {
-      ...prev,
-      answered: true,
-      selectedIdx: selectedItemIdx
-    } : null);
-
-    if (isCorrect) {
-      sounds.playCorrect();
-      me.correctAnswers++;
-      me.doneTasks++;
-      me.completedBitmask |= (1 << activeQuiz.stationIndex);
-      showBanner(`Benar! Dijawab dalam ${answerDuration} dtk. Kecepatan naik ke ${(getSpeed(me)/200).toFixed(2)}x!`);
-    } else {
-      sounds.playWrong();
-      me.wrongAnswers++;
-      me.lockedStations[activeQuiz.stationIndex] = g.t + 6;
-      showBanner(`Kurang tepat! Stasiun terkunci selama 6 detik.`);
-    }
-
-    // Close quiz modal after short pause
-    setTimeout(() => {
-      setActiveQuiz(null);
-      if (me) {
-        me.workUntil = 0;
-        me.invulnerableUntil = g.t + 1.5;
-      }
-      g.activeStationIndex = null;
-
-      // Check win condition
-      checkGameEndCondition();
-    }, isCorrect ? 700 : 1300);
-  };
-
-  // Team Victory Check (Yang menang secara tim tergantung siapa yang tersisa)
+  // Check Team Victory condition (Solo Mode)
   const checkGameEndCondition = useCallback(() => {
     const g = gameRef.current;
     if (g.over) return;
+
+    // If online, server is the source of truth for match victory
+    if (onlineRoom && ws) return;
 
     const survivingCrewPlayers = g.players.filter(p => p.role === 'crew' && !p.dead);
     const survivingImpPlayers = g.players.filter(p => p.role === 'impostor' && !p.dead);
@@ -337,17 +328,15 @@ export const GameScreen: React.FC<Props> = ({
       winnerTitle = '🏆 TIM DETEKTIF / KRU MENANG!';
       reason = `Semua penyusup tertangkap! Kru yang tersisa (${survivingCrewPlayers.length}/${totalCrewPlayers.length} orang) berhasil mempertahankan sekolah hingga titik akhir.`;
     }
-    // Kondisi 3: KRU BERHASIL MENYELESAIKAN MISI TUGAS / TOTAL TASKS TERCAPAI
+    // Kondisi 3: KRU SELESAIKAN SEMUA SOAL
     else {
-      // Check if any surviving crew has completed the required tasks or if collective crew doneTasks reached threshold
-      const completedTasksCount = survivingCrewPlayers.reduce((acc, c) => acc + c.doneTasks, 0);
       const anySoloWinner = survivingCrewPlayers.some(c => c.doneTasks >= config.tasksToWin);
+      const completedTasksCount = survivingCrewPlayers.reduce((acc, c) => acc + c.doneTasks, 0);
 
       if (anySoloWinner || completedTasksCount >= (totalCrewPlayers.length * (config.tasksToWin - 1))) {
-        // Karena ada kru yang masih tersisa dan misi selesai:
         winnerTeam = 'crew';
         winnerTitle = '🏆 TIM DETEKTIF / KRU MENANG!';
-        reason = `Misi tugas sekolah selesai! Detektif kru berhasil mengaktifkan alarm keamanan. Kru yang tersisa: ${survivingCrewPlayers.length} orang selamat dari ancaman penyusup.`;
+        reason = `Misi tugas sekolah selesai! Detektif kru berhasil mengaktifkan alarm keamanan. Kru yang tersisa: ${survivingCrewPlayers.length} siswa selamat dari ancaman penyusup.`;
       }
     }
 
@@ -385,9 +374,73 @@ export const GameScreen: React.FC<Props> = ({
       saveMatchResult(summary);
       onGameOver(summary);
     }
-  }, [config.tasksToWin, onGameOver]);
+  }, [config.tasksToWin, onGameOver, onlineRoom, ws]);
 
-  // Hurt Player Logic
+  // Answer Quiz Option
+  const handleAnswerOption = (selectedItemIdx: number) => {
+    if (!activeQuiz || activeQuiz.answered) return;
+    const g = gameRef.current;
+    const me = g.myPlayer;
+    if (!me) return;
+
+    const answerDuration = Number(((performance.now() - g.quizStartTime) / 1000).toFixed(1));
+    me.taskDurations.push(answerDuration);
+    me.totalAttempts++;
+
+    const isCorrect = activeQuiz.shuffledOptions[selectedItemIdx].origIdx === activeQuiz.question.a;
+
+    setActiveQuiz(prev => prev ? {
+      ...prev,
+      answered: true,
+      selectedIdx: selectedItemIdx
+    } : null);
+
+    if (isCorrect) {
+      sounds.playCorrect();
+      me.correctAnswers++;
+      me.doneTasks++;
+      me.completedBitmask |= (1 << activeQuiz.stationIndex);
+      showBanner(`Benar! (${answerDuration} dtk). Kecepatan naik ke ${(getSpeed(me)/200).toFixed(2)}x!`);
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'task_completed',
+          stationIndex: activeQuiz.stationIndex,
+          duration: answerDuration
+        }));
+      }
+    } else {
+      sounds.playWrong();
+      me.wrongAnswers++;
+      me.lockedStations[activeQuiz.stationIndex] = g.t + 6;
+      showBanner(`Kurang tepat! Stasiun terkunci selama 6 detik.`);
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'task_failed',
+          stationIndex: activeQuiz.stationIndex
+        }));
+      }
+    }
+
+    setTimeout(() => {
+      setActiveQuiz(null);
+      if (me) {
+        me.workUntil = 0;
+        me.invulnerableUntil = g.t + 1.5;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'player_update',
+            workUntil: 0
+          }));
+        }
+      }
+      g.activeStationIndex = null;
+      checkGameEndCondition();
+    }, isCorrect ? 700 : 1300);
+  };
+
+  // Damage Crew
   const damageCrew = useCallback((target: Player, attacker: Player | null) => {
     const g = gameRef.current;
     if (target.dead || isSafe(target, g.t)) return;
@@ -406,7 +459,7 @@ export const GameScreen: React.FC<Props> = ({
       if (target.isMe) {
         showBanner("Kamu tertangkap oleh penyusup!");
       } else {
-        showBanner(`${target.name} gugur disergap penyusup!`);
+        showBanner(`${target.name} [${target.playerClass || '-'}] gugur disergap penyusup!`);
       }
     } else {
       sounds.playHit();
@@ -415,10 +468,16 @@ export const GameScreen: React.FC<Props> = ({
       }
     }
 
-    checkGameEndCondition();
-  }, [checkGameEndCondition, showBanner]);
+    if (ws && ws.readyState === WebSocket.OPEN && target.isMe) {
+      ws.send(JSON.stringify({
+        type: 'player_hit'
+      }));
+    }
 
-  // Initialize Game on Mount
+    checkGameEndCondition();
+  }, [checkGameEndCondition, showBanner, ws]);
+
+  // Main Effect: Init Game and NetSync
   useEffect(() => {
     const g = gameRef.current;
     g.t = 0;
@@ -427,35 +486,105 @@ export const GameScreen: React.FC<Props> = ({
     g.deck = [];
     g.keys = {};
 
-    const stationSpots = isSpectator ? SP12 : SP6;
-    g.stations = stationSpots.map((p, i) => ({
-      i,
-      x: p[0],
-      y: p[1],
-      roomIndex: getRoomAt(p[0], p[1])
-    }));
+    // Online Mode setup
+    if (onlineRoom && initialOnlinePlayers && initialOnlinePlayers.length > 0) {
+      g.stations = (initialStations && initialStations.length > 0)
+        ? initialStations
+        : (initialOnlinePlayers.length >= 6 ? SP12 : SP6).map((p, i) => ({
+            i,
+            x: p[0],
+            y: p[1],
+            roomIndex: getRoomAt(p[0], p[1])
+          }));
 
-    // Setup Crew Players
-    const crewCount = isSpectator ? 6 : 4;
-    setTotalCrew(crewCount);
-    setSurvivingCrew(crewCount);
-    setSurvivingImps(config.impostorsCount);
+      g.players = initialOnlinePlayers.map(p => {
+        const isMe = p.id === myPlayerId || p.isMe;
+        return {
+          ...p,
+          isMe,
+          isAI: false
+        };
+      });
 
-    const crew: Player[] = Array.from({ length: crewCount }, (_, i) => {
-      const isMe = !isSpectator && i === 0;
-      return {
-        id: `crew-${i}`,
-        name: isMe ? (playerName || 'Kamu') : BOT_CREW_NAMES[i % BOT_CREW_NAMES.length],
-        role: 'crew',
-        color: CREW_COLORS[i % CREW_COLORS.length],
-        x: CP[i % CP.length][0],
-        y: CP[i % CP.length][1],
+      g.myPlayer = g.players.find(p => p.isMe) || null;
+      const crewCount = g.players.filter(p => p.role === 'crew').length;
+      const impCount = g.players.filter(p => p.role === 'impostor').length;
+      setTotalCrew(crewCount);
+      setSurvivingCrew(crewCount);
+      setSurvivingImps(impCount);
+
+      showBanner(
+        g.myPlayer?.isSpectator
+          ? "Mode Spektator Aktif: Memantau jalannya pertandingan kelas!"
+          : g.myPlayer?.role === 'impostor'
+          ? "Kamu adalah PENYUSUP! Tangkap kru dan gagalkan tugas mereka."
+          : `Kamu adalah KRU (${playerClass})! Kerjakan soal di stasiun dan bertahan dari penyusup.`
+      );
+    } 
+    // Solo / Practice Mode setup with AI Bots
+    else {
+      const stationSpots = isSpectator ? SP12 : SP6;
+      g.stations = stationSpots.map((p, i) => ({
+        i,
+        x: p[0],
+        y: p[1],
+        roomIndex: getRoomAt(p[0], p[1])
+      }));
+
+      const crewCount = isSpectator ? 6 : 4;
+      setTotalCrew(crewCount);
+      setSurvivingCrew(crewCount);
+      setSurvivingImps(config.impostorsCount);
+
+      const crew: Player[] = Array.from({ length: crewCount }, (_, i) => {
+        const isMe = !isSpectator && i === 0;
+        return {
+          id: `crew-${i}`,
+          name: isMe ? (playerName || 'Kamu') : BOT_CREW_NAMES[i % BOT_CREW_NAMES.length],
+          playerClass: isMe ? playerClass : BOT_CLASSES[i % BOT_CLASSES.length],
+          role: 'crew',
+          color: CREW_COLORS[i % CREW_COLORS.length],
+          x: CP[i % CP.length][0],
+          y: CP[i % CP.length][1],
+          dir: 1,
+          hp: config.crewLives,
+          maxHp: config.crewLives,
+          dead: false,
+          isMe,
+          isAI: !isMe,
+          eliminatedAt: null,
+          survivedUntilEnd: true,
+          doneTasks: 0,
+          totalAttempts: 0,
+          correctAnswers: 0,
+          wrongAnswers: 0,
+          taskDurations: [],
+          shieldEndTime: 0,
+          shieldCooldownUntil: 0,
+          invulnerableUntil: 0,
+          freezeUntil: 0,
+          workUntil: 0,
+          completedBitmask: 0,
+          lockedStations: {},
+          aiAccuracy: 0.65 + Math.random() * 0.25
+        };
+      });
+
+      const imps: Player[] = Array.from({ length: config.impostorsCount }, (_, i) => ({
+        id: `imp-${i}`,
+        name: BOT_IMP_NAMES[i % BOT_IMP_NAMES.length],
+        playerClass: 'Penyusup',
+        role: 'impostor',
+        color: '#e0463c',
+        x: IP[i % IP.length][0],
+        y: IP[i % IP.length][1],
         dir: 1,
-        hp: config.crewLives,
-        maxHp: config.crewLives,
+        angle: Math.random() * Math.PI * 2,
+        hp: 1,
+        maxHp: 1,
         dead: false,
-        isMe,
-        isAI: !isMe,
+        isMe: false,
+        isAI: true,
         eliminatedAt: null,
         survivedUntilEnd: true,
         doneTasks: 0,
@@ -468,52 +597,99 @@ export const GameScreen: React.FC<Props> = ({
         invulnerableUntil: 0,
         freezeUntil: 0,
         workUntil: 0,
+        shootCooldownUntil: 2.0,
         completedBitmask: 0,
-        lockedStations: {},
-        aiAccuracy: 0.65 + Math.random() * 0.25
+        lockedStations: {}
+      }));
+
+      g.players = [...crew, ...imps];
+      g.myPlayer = isSpectator ? null : crew[0];
+
+      showBanner(
+        isSpectator 
+          ? "Mode Spektator Latihan Aktif: Pantau persaingan Kru dan Penyusup!" 
+          : "Temukan stasiun kuning di kelas, kerjakan soal (E/Spasi), dan gunakan tameng (Q)!"
+      );
+    }
+
+    // WebSocket Incoming Message Handler
+    if (ws) {
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          
+          if (msg.type === 'player_moved') {
+            const p = g.players.find(x => x.id === msg.playerId);
+            if (p && !p.isMe) {
+              p.x = msg.x;
+              p.y = msg.y;
+              p.dir = msg.dir;
+              if (typeof msg.angle === 'number') p.angle = msg.angle;
+              if (typeof msg.workUntil === 'number') p.workUntil = msg.workUntil;
+              if (typeof msg.shieldEndTime === 'number') p.shieldEndTime = msg.shieldEndTime;
+            }
+          } else if (msg.type === 'bullet_fired') {
+            const shooter = g.players.find(x => x.id === msg.shooterId);
+            if (shooter && !shooter.isMe) {
+              sounds.playShoot();
+              [-0.32, 0, 0.32].forEach(offset => {
+                g.bullets.push({
+                  x: msg.x,
+                  y: msg.y,
+                  vx: Math.cos(msg.angle + offset) * 350,
+                  vy: Math.sin(msg.angle + offset) * 350,
+                  life: 1.2
+                });
+              });
+            }
+          } else if (msg.type === 'shield_used') {
+            const p = g.players.find(x => x.id === msg.playerId);
+            if (p && !p.isMe) {
+              sounds.playShield();
+              p.shieldEndTime = msg.shieldEndTime;
+              p.shieldCooldownUntil = msg.shieldCooldownUntil;
+            }
+          } else if (msg.type === 'task_progress') {
+            const p = g.players.find(x => x.id === msg.playerId);
+            if (p && !p.isMe) {
+              p.doneTasks = msg.doneTasks;
+              p.correctAnswers = msg.correctAnswers;
+              p.totalAttempts = msg.totalAttempts;
+              p.completedBitmask = msg.completedBitmask;
+            }
+            if (msg.message) showBanner(msg.message);
+          } else if (msg.type === 'player_damaged') {
+            const p = g.players.find(x => x.id === msg.playerId);
+            if (p) {
+              p.hp = msg.hp;
+              sounds.playHit();
+            }
+            if (msg.message) showBanner(msg.message);
+          } else if (msg.type === 'player_eliminated') {
+            const p = g.players.find(x => x.id === msg.playerId);
+            if (p) {
+              p.dead = true;
+              p.eliminatedAt = msg.eliminatedAt;
+              sounds.playHit();
+            }
+            if (msg.message) showBanner(msg.message);
+          } else if (msg.type === 'game_over') {
+            g.over = true;
+            if (msg.summary) {
+              if (msg.summary.winnerTeam === 'crew') {
+                sounds.playVictory();
+              } else {
+                sounds.playDefeat();
+              }
+              saveMatchResult(msg.summary);
+              onGameOver(msg.summary);
+            }
+          }
+        } catch (e) {
+          console.error('Error handling ws message in game', e);
+        }
       };
-    });
-
-    // Setup Impostors
-    const imps: Player[] = Array.from({ length: config.impostorsCount }, (_, i) => ({
-      id: `imp-${i}`,
-      name: BOT_IMP_NAMES[i % BOT_IMP_NAMES.length],
-      role: 'impostor',
-      color: '#e0463c',
-      x: IP[i % IP.length][0],
-      y: IP[i % IP.length][1],
-      dir: 1,
-      angle: Math.random() * Math.PI * 2,
-      hp: 1,
-      maxHp: 1,
-      dead: false,
-      isMe: false,
-      isAI: true,
-      eliminatedAt: null,
-      survivedUntilEnd: true,
-      doneTasks: 0,
-      totalAttempts: 0,
-      correctAnswers: 0,
-      wrongAnswers: 0,
-      taskDurations: [],
-      shieldEndTime: 0,
-      shieldCooldownUntil: 0,
-      invulnerableUntil: 0,
-      freezeUntil: 0,
-      workUntil: 0,
-      shootCooldownUntil: 2.0,
-      completedBitmask: 0,
-      lockedStations: {}
-    }));
-
-    g.players = [...crew, ...imps];
-    g.myPlayer = isSpectator ? null : crew[0];
-
-    showBanner(
-      isSpectator 
-        ? "Mode Spektator Aktif: Saksikan persaingan Kru dan Penyusup!" 
-        : "Jelajahi sekolah, jawab soal di stasiun tugas (E / Spasi), dan bertahan hidup!"
-    );
+    }
 
     // Keyboard handlers
     const keyMap: Record<string, string> = {
@@ -547,7 +723,7 @@ export const GameScreen: React.FC<Props> = ({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
-    // Main Game Animation Loop
+    // Animation Loop
     let animId: number;
     let lastTime = performance.now();
 
@@ -558,15 +734,14 @@ export const GameScreen: React.FC<Props> = ({
       if (!g.over) {
         g.t += dt;
 
-        // 1. Update Crew Players
+        // 1. Update Crew
         for (const c of g.players.filter(p => p.role === 'crew')) {
           if (c.dead) continue;
 
-          // AI Crew Behavior
+          // AI behavior in Solo mode
           if (c.isAI) {
             if (c.aiPending && c.workUntil <= g.t) {
               c.aiPending = false;
-              // AI answers task
               const isAccurate = Math.random() < (c.aiAccuracy || 0.7);
               const answerTime = Number((2.0 + Math.random() * 3.5).toFixed(1));
               c.taskDurations.push(answerTime);
@@ -585,13 +760,11 @@ export const GameScreen: React.FC<Props> = ({
             }
 
             if (c.workUntil <= g.t) {
-              // Check nearby impostor -> use shield if close
               const nearestImp = g.players.find(p => p.role === 'impostor' && !p.dead && Math.hypot(p.x - c.x, p.y - c.y) < 110);
               if (nearestImp) {
                 triggerSkill(c);
               }
 
-              // Pathfind / move towards next available station
               let bestStation: TaskStation | null = null;
               let bestDist = 1e9;
               for (const s of g.stations) {
@@ -618,7 +791,7 @@ export const GameScreen: React.FC<Props> = ({
               }
             }
           } 
-          // Human Player Movement
+          // Local Player Movement
           else if (c.isMe) {
             if (c.workUntil <= g.t) {
               let dx = (g.keys.right ? 1 : 0) - (g.keys.left ? 1 : 0);
@@ -632,7 +805,7 @@ export const GameScreen: React.FC<Props> = ({
             }
           }
 
-          // Check collision with Impostors
+          // Impostor collision check
           if (!isSafe(c, g.t)) {
             for (const imp of g.players.filter(p => p.role === 'impostor' && !p.dead)) {
               if (imp.freezeUntil <= g.t && Math.hypot(c.x - imp.x, c.y - imp.y) < 26) {
@@ -647,28 +820,38 @@ export const GameScreen: React.FC<Props> = ({
         for (const imp of g.players.filter(p => p.role === 'impostor')) {
           if (imp.dead || imp.freezeUntil > g.t) continue;
 
-          // Find closest alive crew
-          let targetCrew: Player | null = null;
-          let minDist = 1e9;
-          for (const crewP of g.players.filter(p => p.role === 'crew' && !p.dead)) {
-            const d = Math.hypot(crewP.x - imp.x, crewP.y - imp.y);
-            if (d < minDist) {
-              minDist = d;
-              targetCrew = crewP;
+          if (imp.isAI) {
+            let targetCrew: Player | null = null;
+            let minDist = 1e9;
+            for (const crewP of g.players.filter(p => p.role === 'crew' && !p.dead)) {
+              const d = Math.hypot(crewP.x - imp.x, crewP.y - imp.y);
+              if (d < minDist) {
+                minDist = d;
+                targetCrew = crewP;
+              }
             }
-          }
 
-          if (targetCrew) {
-            const angle = Math.atan2(targetCrew.y - imp.y, targetCrew.x - imp.x);
-            imp.angle = angle;
-            imp.dir = Math.cos(angle) > 0 ? 1 : -1;
+            if (targetCrew) {
+              const angle = Math.atan2(targetCrew.y - imp.y, targetCrew.x - imp.x);
+              imp.angle = angle;
+              imp.dir = Math.cos(angle) > 0 ? 1 : -1;
 
-            const chaseSpeed = minDist < 280 ? 130 : 95;
-            moveEntity(imp, Math.cos(angle) * chaseSpeed * dt, Math.sin(angle) * chaseSpeed * dt);
+              const chaseSpeed = minDist < 280 ? 130 : 95;
+              moveEntity(imp, Math.cos(angle) * chaseSpeed * dt, Math.sin(angle) * chaseSpeed * dt);
 
-            // Shoot bullets if in range
-            if (minDist < 390 && g.t >= (imp.shootCooldownUntil || 0)) {
-              triggerSkill(imp);
+              if (minDist < 390 && g.t >= (imp.shootCooldownUntil || 0)) {
+                triggerSkill(imp);
+              }
+            }
+          } else if (imp.isMe) {
+            let dx = (g.keys.right ? 1 : 0) - (g.keys.left ? 1 : 0);
+            let dy = (g.keys.down ? 1 : 0) - (g.keys.up ? 1 : 0);
+            if (dx !== 0 || dy !== 0) {
+              const len = Math.hypot(dx, dy);
+              if (dx !== 0) imp.dir = dx > 0 ? 1 : -1;
+              imp.angle = Math.atan2(dy, dx);
+              const speed = getSpeed(imp);
+              moveEntity(imp, (dx / len) * speed * dt, (dy / len) * speed * dt);
             }
           }
         }
@@ -683,7 +866,7 @@ export const GameScreen: React.FC<Props> = ({
           for (const crewP of g.players.filter(p => p.role === 'crew' && !p.dead)) {
             if (Math.hypot(crewP.x - b.x, crewP.y - b.y) <= 18) {
               if (crewP.shieldEndTime > g.t) {
-                return false; // deflected by shield!
+                return false;
               }
               if (!isSafe(crewP, g.t)) {
                 damageCrew(crewP, null);
@@ -694,7 +877,24 @@ export const GameScreen: React.FC<Props> = ({
           return true;
         });
 
-        // Update React HUD state periodically
+        // 4. WebSocket Throttled Position Broadcast (20Hz)
+        if (ws && ws.readyState === WebSocket.OPEN && g.myPlayer && !g.myPlayer.dead) {
+          const nowMs = performance.now();
+          if (nowMs - g.lastNetSyncTime > 50) {
+            g.lastNetSyncTime = nowMs;
+            ws.send(JSON.stringify({
+              type: 'player_update',
+              x: Math.round(g.myPlayer.x),
+              y: Math.round(g.myPlayer.y),
+              dir: g.myPlayer.dir,
+              angle: g.myPlayer.angle,
+              workUntil: g.myPlayer.workUntil,
+              shieldEndTime: g.myPlayer.shieldEndTime
+            }));
+          }
+        }
+
+        // React HUD state
         if (g.myPlayer) {
           setHudLives(g.myPlayer.hp);
           setHudRoom(ROOMS[getRoomAt(g.myPlayer.x, g.myPlayer.y)]);
@@ -710,7 +910,6 @@ export const GameScreen: React.FC<Props> = ({
         setSurvivingImps(impAlive);
       }
 
-      // 4. Render to Canvas
       drawCanvas();
 
       if (!g.over) {
@@ -726,9 +925,9 @@ export const GameScreen: React.FC<Props> = ({
       window.removeEventListener('keyup', onKeyUp);
       if (bannerTimeoutRef.current) clearTimeout(bannerTimeoutRef.current);
     };
-  }, [config, isSpectator, playerName, checkGameEndCondition, damageCrew, interactTask, triggerSkill, showBanner]);
+  }, [config, isSpectator, playerName, playerClass, checkGameEndCondition, damageCrew, interactTask, triggerSkill, showBanner, ws, onlineRoom, initialOnlinePlayers, initialStations, myPlayerId]);
 
-  // Canvas Drawing Function
+  // Canvas Drawing
   const drawCanvas = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -740,13 +939,12 @@ export const GameScreen: React.FC<Props> = ({
     const ch = canvas.height;
     const t = g.t;
 
-    // Camera target: My player OR chosen spectator target OR full map
     let targetEntity: Player | null = g.myPlayer;
     if (isSpectator) {
       if (spectatorTargetId) {
         targetEntity = g.players.find(p => p.id === spectatorTargetId) || null;
       } else {
-        targetEntity = null; // show map view
+        targetEntity = null;
       }
     }
 
@@ -765,7 +963,6 @@ export const GameScreen: React.FC<Props> = ({
       oy = (ch - H * scale) / 2;
     }
 
-    // Clear background
     ctx.fillStyle = '#0d1914';
     ctx.fillRect(0, 0, cw, ch);
 
@@ -774,7 +971,7 @@ export const GameScreen: React.FC<Props> = ({
     ctx.scale(scale, scale);
     ctx.translate(-cx, -cy);
 
-    // Render 6 Rooms with Floor and Decorative Tiles
+    // 6 Rooms
     for (let i = 0; i < 6; i++) {
       const rx = (i % 3) * RS;
       const ry = Math.floor(i / 3) * RS;
@@ -782,7 +979,6 @@ export const GameScreen: React.FC<Props> = ({
       ctx.fillStyle = FLOOR_COLORS[i];
       ctx.fillRect(rx, ry, RS, RS);
 
-      // Subtle floor grid tiles
       ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
       ctx.lineWidth = 1;
       for (let k = 60; k < RS; k += 60) {
@@ -794,23 +990,21 @@ export const GameScreen: React.FC<Props> = ({
         ctx.stroke();
       }
 
-      // Furniture
       drawFurniture(ctx, i, rx, ry);
 
-      // Room Title
       ctx.fillStyle = "rgba(243, 239, 220, 0.55)";
       ctx.font = "600 24px 'Fredoka', system-ui";
       ctx.textAlign = "left";
       ctx.fillText(ROOMS[i], rx + 28, ry + 44);
     }
 
-    // Render Walls
+    // Walls
     ctx.fillStyle = '#6c8f7c';
     for (const w of BASE_WALLS) {
       ctx.fillRect(w[0], w[1], w[2], w[3]);
     }
 
-    // Render Task Stations
+    // Stations
     for (const s of g.stations) {
       const viewer = g.myPlayer;
       const isDone = viewer ? !!((viewer.completedBitmask >> s.i) & 1) : false;
@@ -826,7 +1020,6 @@ export const GameScreen: React.FC<Props> = ({
       ctx.textAlign = "center";
       ctx.fillText(isDone ? "✓" : isLocked ? "✕" : "?", s.x, s.y + 6);
 
-      // Pulsing highlight for active stations
       if (!isDone && !isLocked) {
         ctx.strokeStyle = "rgba(245, 213, 71, 0.6)";
         ctx.lineWidth = 2;
@@ -836,7 +1029,7 @@ export const GameScreen: React.FC<Props> = ({
       }
     }
 
-    // Render Players (Y-sorted for 2.5D depth)
+    // Players (depth sorted)
     const renderItems = [...g.players].map(p => ({
       y: p.y,
       draw: () => {
@@ -848,7 +1041,7 @@ export const GameScreen: React.FC<Props> = ({
 
     renderItems.sort((a, b) => a.y - b.y).forEach(item => item.draw());
 
-    // Render Bullets
+    // Bullets
     ctx.fillStyle = '#ff8a5c';
     for (const b of g.bullets) {
       ctx.beginPath();
@@ -859,7 +1052,7 @@ export const GameScreen: React.FC<Props> = ({
     ctx.restore();
   };
 
-  // Character Drawing Helper
+  // Draw Character with Nickname and Kelas
   const drawCharacter = (ctx: CanvasRenderingContext2D, p: Player, t: number) => {
     ctx.save();
     ctx.translate(p.x, p.y);
@@ -870,7 +1063,7 @@ export const GameScreen: React.FC<Props> = ({
     ctx.ellipse(0, 14, 14, 5, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Impostor laser gun direction indicator
+    // Impostor laser gun direction
     if (p.role === 'impostor') {
       const angle = p.angle || 0;
       ctx.strokeStyle = "#222";
@@ -907,7 +1100,6 @@ export const GameScreen: React.FC<Props> = ({
 
     // Hat / Eyebrows
     if (p.role === 'impostor') {
-      // Angry eyebrows
       ctx.strokeStyle = "#111";
       ctx.lineWidth = 2.5;
       ctx.beginPath();
@@ -917,7 +1109,6 @@ export const GameScreen: React.FC<Props> = ({
       ctx.lineTo(2, -6);
       ctx.stroke();
     } else {
-      // Detective Beret / Hat
       ctx.fillStyle = "#1b1b1b";
       ctx.fillRect(-11, -19, 22, 5);
       ctx.beginPath();
@@ -928,11 +1119,12 @@ export const GameScreen: React.FC<Props> = ({
       ctx.fill();
     }
 
-    // Name label
+    // Display Nickname and Kelas badge (Contoh: "Budi [7A] (Kamu)")
     ctx.fillStyle = p.isMe ? "#f5d547" : "#f3efdc";
     ctx.font = "bold 12px system-ui";
     ctx.textAlign = "center";
-    ctx.fillText(p.name + (p.isMe ? " (Kamu)" : ""), 0, -28);
+    const classBadge = p.playerClass ? ` [${p.playerClass}]` : '';
+    ctx.fillText(`${p.name}${classBadge}${p.isMe ? " (Kamu)" : ""}`, 0, -28);
 
     // Active Shield Bubble
     if (p.shieldEndTime > t && !p.dead) {
@@ -956,7 +1148,7 @@ export const GameScreen: React.FC<Props> = ({
     ctx.restore();
   };
 
-  // Furniture Drawing Helper
+  // Furniture Helper
   const drawFurniture = (ctx: CanvasRenderingContext2D, roomIdx: number, rx: number, ry: number) => {
     ctx.save();
     ctx.translate(rx, ry);
@@ -1051,7 +1243,6 @@ export const GameScreen: React.FC<Props> = ({
     ctx.restore();
   };
 
-  // D-Pad touch handlers for mobile
   const handleDpadDown = (key: string) => {
     gameRef.current.keys[key] = true;
   };
@@ -1059,17 +1250,19 @@ export const GameScreen: React.FC<Props> = ({
     gameRef.current.keys[key] = false;
   };
 
+  const isImpostor = gameRef.current.myPlayer?.role === 'impostor';
+
   return (
     <div className="relative w-full max-w-5xl mx-auto flex flex-col items-center">
       
       {/* Top HUD Bar */}
-      <div className="w-full bg-[#1d3a2f] border-2 border-[#335a49] rounded-2xl px-4 py-2.5 mb-2.5 flex items-center justify-between gap-3 text-xs sm:text-sm">
+      <div className="w-full bg-[#1d3a2f] border-2 border-[#335a49] rounded-2xl px-4 py-2.5 mb-2.5 flex items-center justify-between gap-3 text-xs sm:text-sm shadow-md">
         
         <div className="flex items-center gap-2">
           <button
             onClick={onExit}
             className="p-1.5 rounded-lg bg-[#14261f] border border-[#335a49] text-[#a9bdb2] hover:text-[#f3efdc] transition-colors flex items-center gap-1"
-            title="Keluar ke Menu"
+            title="Keluar ke Lobi / Menu"
           >
             <LogOut className="w-4 h-4" />
             <span className="hidden sm:inline">Keluar</span>
@@ -1082,17 +1275,33 @@ export const GameScreen: React.FC<Props> = ({
           >
             {soundOn ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4 text-[#ef6b5b]" />}
           </button>
+
+          {onlineRoom && (
+            <div className="hidden md:flex items-center gap-1 text-[11px] bg-[#14261f] px-2 py-0.5 rounded border border-[#335a49]">
+              <span className="text-[#a9bdb2]">Room:</span>
+              <strong className="text-[#f5d547] font-mono">{onlineRoom.code}</strong>
+            </div>
+          )}
         </div>
 
         {/* Status Nyawa & Peran */}
         <div className="flex items-center gap-4">
           {!isSpectator ? (
             <div className="flex items-center gap-1 font-bold">
-              <span className="text-[#a9bdb2] text-xs hidden sm:inline">Nyawa:</span>
-              <span className="text-[#ef6b5b] tracking-wider text-base">
-                {"♥".repeat(Math.max(0, hudLives))}
-                {"♡".repeat(Math.max(0, config.crewLives - hudLives))}
+              <span className="text-[#a9bdb2] text-xs hidden sm:inline">
+                {isImpostor ? 'Peran: ' : 'Nyawa: '}
               </span>
+              {isImpostor ? (
+                <span className="text-[#ef6b5b] font-bold flex items-center gap-1">
+                  <Skull className="w-4 h-4" />
+                  Penyusup
+                </span>
+              ) : (
+                <span className="text-[#ef6b5b] tracking-wider text-base">
+                  {"♥".repeat(Math.max(0, hudLives))}
+                  {"♡".repeat(Math.max(0, config.crewLives - hudLives))}
+                </span>
+              )}
             </div>
           ) : (
             <div className="flex items-center gap-1 text-[#f5d547] font-semibold">
@@ -1122,16 +1331,20 @@ export const GameScreen: React.FC<Props> = ({
               onClick={() => gameRef.current.myPlayer && triggerSkill(gameRef.current.myPlayer)}
               disabled={shieldCooldownLeft > 0}
               className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all flex items-center gap-1 ${
-                isShieldActive 
+                isImpostor
+                  ? 'bg-[#e0463c] text-white border border-[#ff8a5c] hover:bg-[#b8332a]'
+                  : isShieldActive 
                   ? 'bg-[#7fdcff] text-[#0a2332] shadow-lg animate-pulse'
                   : shieldCooldownLeft <= 0 
                   ? 'bg-[#2b6f8f] text-[#f3efdc] border border-[#7fdcff] hover:bg-[#3486ad]' 
                   : 'bg-[#14261f] text-[#a9bdb2] opacity-50 cursor-not-allowed border border-[#335a49]'
               }`}
             >
-              <Shield className="w-3.5 h-3.5" />
+              {isImpostor ? <Skull className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
               <span>
-                {isShieldActive 
+                {isImpostor
+                  ? 'Tembak Laser (Q)'
+                  : isShieldActive 
                   ? 'Tameng Aktif' 
                   : shieldCooldownLeft > 0 
                   ? `${shieldCooldownLeft}s (Q)` 
@@ -1164,7 +1377,7 @@ export const GameScreen: React.FC<Props> = ({
           </div>
         )}
 
-        {/* Action Prompt when near task */}
+        {/* Action Prompt */}
         {canInteractTask && !activeQuiz && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-xl bg-[#f5d547] text-[#14261f] font-bold text-xs sm:text-sm shadow-xl flex items-center gap-2 animate-bounce cursor-pointer" onClick={interactTask}>
             <span>Tekan [E] atau [Spasi] untuk Kerjakan Tugas</span>
@@ -1193,7 +1406,7 @@ export const GameScreen: React.FC<Props> = ({
               }`}
             >
               <span className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
-              <span>{p.name}</span>
+              <span>{p.name} {p.playerClass && `[${p.playerClass}]`}</span>
               {p.dead && <span className="text-[#ef6b5b]">(Gugur)</span>}
             </button>
           ))}
@@ -1203,10 +1416,10 @@ export const GameScreen: React.FC<Props> = ({
       {/* Controls Hint & Mobile Virtual D-Pad */}
       <div className="w-full mt-2.5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-[#a9bdb2]">
         <div className="hidden sm:block">
-          Gerak: <strong>WASD</strong> atau <strong>Panah</strong> · Kerjakan Soal: <strong>E</strong> / <strong>Spasi</strong> · Skill Tameng: <strong>Q</strong>
+          Gerak: <strong>WASD</strong> atau <strong>Panah</strong> · Kerjakan Soal: <strong>E</strong> / <strong>Spasi</strong> · Skill Tameng / Tembak: <strong>Q</strong>
         </div>
 
-        {/* Mobile On-Screen D-Pad and Action Button */}
+        {/* Mobile D-Pad */}
         <div className="flex sm:hidden items-center justify-between w-full px-2 py-1">
           <div className="grid grid-cols-3 grid-rows-3 gap-1 w-32 h-32 select-none">
             <div></div>
@@ -1250,7 +1463,7 @@ export const GameScreen: React.FC<Props> = ({
               className="w-16 h-16 rounded-full bg-[#2b6f8f] border-2 border-[#7fdcff] text-[#f3efdc] font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95"
             >
               <Shield className="w-4 h-4 mb-0.5" />
-              Tameng
+              {isImpostor ? 'Tembak' : 'Tameng'}
             </button>
 
             <button
@@ -1267,7 +1480,7 @@ export const GameScreen: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Quiz Modal Dialog */}
+      {/* Quiz Modal */}
       {activeQuiz && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-3 sm:p-6 bg-black/75 backdrop-blur-sm">
           <div className="bg-[#1d3a2f] border-2 border-[#335a49] rounded-2xl w-full max-w-lg p-5 sm:p-6 shadow-2xl text-[#f3efdc] animate-in fade-in duration-200">
