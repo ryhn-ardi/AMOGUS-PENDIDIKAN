@@ -1,0 +1,6 @@
+{
+  "name": "Detektif Kelas - Game Edukasi Tim & Kuis Bertahan Hidup",
+  "description": "Game edukasi survival detektif kelas multipemain dan solo: selesaikan soal di tiap stasiun, bertahan dari penyusup, tentukan kemenangan tim dan raih puncak leaderboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
