@@ -31,6 +31,7 @@ export function calculateLeaderboard(players: Player[], matchDuration: number): 
       id: player.id,
       name: player.name,
       playerClass: player.playerClass,
+      attendanceNumber: player.attendanceNumber,
       role: player.role,
       isMe: player.isMe,
       color: player.color,

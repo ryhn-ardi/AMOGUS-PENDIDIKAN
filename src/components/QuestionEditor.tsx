@@ -227,13 +227,35 @@ export const QuestionEditor: React.FC<Props> = ({ questions, onSaveQuestions, on
           </p>
         </div>
 
-        <button
-          onClick={onBack}
-          className="self-start sm:self-auto px-4 py-2 rounded-xl bg-[#1d3a2f] border border-[#335a49] hover:bg-[#25493b] text-sm font-semibold transition-colors flex items-center gap-1.5"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          Kembali ke Menu
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            onClick={() => {
+              const newPin = prompt('Atur Kata Sandi / PIN Baru Guru (minimal 4 karakter):');
+              if (newPin && newPin.trim().length >= 4) {
+                localStorage.setItem('dk_admin_pin', newPin.trim());
+                alert('Kata sandi admin berhasil diubah!');
+              } else if (newPin !== null) {
+                alert('PIN terlalu pendek! Minimal 4 karakter.');
+              }
+            }}
+            className="px-3 py-2 rounded-xl bg-[#14261f] border border-[#335a49] hover:bg-[#25493b] text-xs font-semibold text-[#f5d547] transition-colors"
+            title="Ubah kata sandi admin/guru"
+          >
+            Ubah PIN Guru
+          </button>
+
+          <button
+            onClick={() => {
+              sessionStorage.removeItem('dk_admin_auth');
+              onBack();
+            }}
+            className="px-4 py-2 rounded-xl bg-[#1d3a2f] border border-[#335a49] hover:bg-[#25493b] text-sm font-semibold transition-colors flex items-center gap-1.5 text-[#ef6b5b]"
+            title="Keluar dan Kunci Bank Soal"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Kunci &amp; Keluar
+          </button>
+        </div>
       </div>
 
       {/* Info Card: Penjelasan Randomize Soal per Siswa */}

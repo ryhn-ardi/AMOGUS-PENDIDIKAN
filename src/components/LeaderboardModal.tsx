@@ -301,6 +301,11 @@ export const LeaderboardModal: React.FC<Props> = ({ summary, onPlayAgain, onBack
                                   · Kelas {player.playerClass}
                                 </span>
                               )}
+                              {player.attendanceNumber && (
+                                <span className="ml-1 text-[#f5d547] font-semibold">
+                                  (Absen: #{player.attendanceNumber})
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>

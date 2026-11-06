@@ -29,10 +29,11 @@ interface Props {
   myPlayer: Player | null;
   defaultName: string;
   defaultClass: string;
+  defaultAttendance?: string;
   questions: Question[];
   config: GameConfig;
-  onJoinRoom: (roomCode: string, name: string, playerClass: string, isSpectator: boolean) => void;
-  onCreateRoom: (customCode: string, name: string, playerClass: string, config: GameConfig, questions: Question[], isSpectator: boolean) => void;
+  onJoinRoom: (roomCode: string, name: string, playerClass: string, attendanceNumber: string, isSpectator: boolean) => void;
+  onCreateRoom: (customCode: string, name: string, playerClass: string, attendanceNumber: string, config: GameConfig, questions: Question[], isSpectator: boolean) => void;
   onStartGame: () => void;
   onLeaveRoom: () => void;
   onBackToMenu: () => void;
@@ -47,6 +48,7 @@ export const OnlineLobby: React.FC<Props> = ({
   myPlayer,
   defaultName,
   defaultClass,
+  defaultAttendance = '',
   questions,
   config,
   onJoinRoom,
@@ -60,6 +62,7 @@ export const OnlineLobby: React.FC<Props> = ({
   const [tab, setTab] = useState<'join' | 'create'>('join');
   const [nickname, setNickname] = useState(defaultName || '');
   const [playerClass, setPlayerClass] = useState(defaultClass || '');
+  const [attendanceNumber, setAttendanceNumber] = useState(defaultAttendance || '');
   const [roomCodeInput, setRoomCodeInput] = useState('');
   const [isSpectator, setIsSpectator] = useState(false);
   const [customRoomCode, setCustomRoomCode] = useState('');
@@ -107,6 +110,7 @@ export const OnlineLobby: React.FC<Props> = ({
       customRoomCode.trim().toUpperCase(),
       nickname.trim(),
       playerClass.trim() || 'Umum',
+      attendanceNumber.trim(),
       hostConfig,
       questions,
       isSpectator
@@ -119,11 +123,12 @@ export const OnlineLobby: React.FC<Props> = ({
     if (!finalCode) return;
     const finalName = (nickname || defaultName || 'Siswa').trim() || 'Siswa';
     const finalClass = (playerClass || defaultClass || 'Umum').trim() || 'Umum';
+    const finalAttendance = (attendanceNumber || defaultAttendance || '').trim();
     const finalSpectator = isPlaying ? true : isSpectator;
     sounds.playClick();
     setIsJoiningRoom(finalCode);
     setRoomCodeInput(finalCode);
-    onJoinRoom(finalCode, finalName, finalClass, finalSpectator);
+    onJoinRoom(finalCode, finalName, finalClass, finalAttendance, finalSpectator);
     setTimeout(() => setIsJoiningRoom(null), 3000);
   };
 
@@ -133,12 +138,14 @@ export const OnlineLobby: React.FC<Props> = ({
     if (!finalCode) return;
     const finalName = (nickname || defaultName || 'Siswa').trim() || 'Siswa';
     const finalClass = (playerClass || defaultClass || 'Umum').trim() || 'Umum';
+    const finalAttendance = (attendanceNumber || defaultAttendance || '').trim();
     sounds.playClick();
     setIsJoiningRoom(finalCode);
     onJoinRoom(
       finalCode,
       finalName,
       finalClass,
+      finalAttendance,
       isSpectator
     );
     setTimeout(() => setIsJoiningRoom(null), 3000);
@@ -227,7 +234,7 @@ export const OnlineLobby: React.FC<Props> = ({
               Identitas Siswa / Pemain
             </h3>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-[#a9bdb2] mb-1">
                   Nama Panggilan (Nickname) *
@@ -237,9 +244,9 @@ export const OnlineLobby: React.FC<Props> = ({
                   required
                   value={nickname}
                   onChange={(e) => setNickname(e.target.value)}
-                  placeholder="Contoh: Budi, Rani, Dimas"
+                  placeholder="Contoh: Budi, Rani"
                   maxLength={16}
-                  className="w-full bg-[#14261f] border border-[#335a49] rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#f5d547]"
+                  className="w-full bg-[#14261f] border border-[#335a49] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[#f5d547]"
                 />
               </div>
 
@@ -252,9 +259,23 @@ export const OnlineLobby: React.FC<Props> = ({
                   required
                   value={playerClass}
                   onChange={(e) => setPlayerClass(e.target.value)}
-                  placeholder="Contoh: 7A, 8-B, Kelas 9, dsb."
+                  placeholder="Contoh: 7A, 8-B"
                   maxLength={16}
-                  className="w-full bg-[#14261f] border border-[#335a49] rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#f5d547]"
+                  className="w-full bg-[#14261f] border border-[#335a49] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[#f5d547]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#a9bdb2] mb-1">
+                  Nomor Absen
+                </label>
+                <input
+                  type="text"
+                  value={attendanceNumber}
+                  onChange={(e) => setAttendanceNumber(e.target.value)}
+                  placeholder="Contoh: 12, 05"
+                  maxLength={6}
+                  className="w-full bg-[#14261f] border border-[#335a49] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[#f5d547]"
                 />
               </div>
             </div>
@@ -594,6 +615,11 @@ export const OnlineLobby: React.FC<Props> = ({
                         </div>
                         <div className="text-[11px] text-[#a9bdb2]">
                           Kelas: <strong className="text-[#f3efdc]">{player.playerClass || '-'}</strong>
+                          {player.attendanceNumber && (
+                            <span className="ml-1.5 text-[#f5d547]">
+                              · Absen: <strong>#{player.attendanceNumber}</strong>
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>

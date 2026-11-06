@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType, testConnection } from './firebase';
 import { OnlineRoomData, Player, TaskStation, MatchSummary, GameConfig, Question } from '../types/game';
+import { generateRandomizedStations } from '../components/GameScreen';
 
 // Stable unique client id per device/tab
 export function getClientId(): string {
@@ -79,6 +80,7 @@ export const firebaseMultiplayer = {
     roomCode?: string;
     name: string;
     playerClass: string;
+    attendanceNumber?: string;
     config?: GameConfig;
     questions?: Question[];
     isSpectator?: boolean;
@@ -101,10 +103,11 @@ export const firebaseMultiplayer = {
       id: clientId,
       name: params.name.trim() || 'Host',
       playerClass: params.playerClass.trim() || 'Umum',
+      attendanceNumber: params.attendanceNumber?.trim() || '',
       role: 'crew',
       color: PLAYER_COLORS[0],
-      x: 480,
-      y: 450,
+      x: 900,
+      y: 750,
       dir: 1,
       hp: params.config?.crewLives || 3,
       maxHp: params.config?.crewLives || 3,
@@ -173,6 +176,7 @@ export const firebaseMultiplayer = {
     roomCode: string;
     name: string;
     playerClass: string;
+    attendanceNumber?: string;
     isSpectator?: boolean;
   }) {
     const clientId = getClientId();
@@ -205,10 +209,11 @@ export const firebaseMultiplayer = {
         id: clientId,
         name: params.name.trim() || 'Siswa',
         playerClass: params.playerClass.trim() || 'Umum',
+        attendanceNumber: params.attendanceNumber?.trim() || '',
         role: 'crew',
         color: PLAYER_COLORS[colorIndex],
-        x: 480 + (existingPlayers.length * 30) % 200,
-        y: 450 + (existingPlayers.length * 20) % 150,
+        x: 880 + (existingPlayers.length * 28) % 180,
+        y: 740 + (existingPlayers.length * 20) % 120,
         dir: 1,
         hp: roomData.config?.crewLives || 3,
         maxHp: roomData.config?.crewLives || 3,
@@ -233,18 +238,33 @@ export const firebaseMultiplayer = {
         lockedStations: {}
       };
 
-      await setDoc(doc(db, 'rooms', cleanCode, 'players', clientId), myPlayer);
-      await updateDoc(roomRef, {
-        playerCount: existingPlayers.length + 1,
-        updatedAt: Date.now()
-      });
+      try {
+        await setDoc(doc(db, 'rooms', cleanCode, 'players', clientId), myPlayer);
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.WRITE, `rooms/${cleanCode}/players/${clientId}`);
+        throw new Error('Gagal mendaftarkan pemain ke dalam room.');
+      }
+
+      try {
+        await updateDoc(roomRef, {
+          playerCount: existingPlayers.length + 1,
+          updatedAt: Date.now()
+        });
+      } catch (err: any) {
+        // Non-critical: player doc is already registered
+      }
+
       existingPlayers.push(myPlayer);
     } else {
       // Update nickname or class
       myPlayer.name = params.name.trim() || myPlayer.name;
       myPlayer.playerClass = params.playerClass.trim() || myPlayer.playerClass;
       myPlayer.isSpectator = !!params.isSpectator;
-      await setDoc(doc(db, 'rooms', cleanCode, 'players', clientId), myPlayer, { merge: true });
+      try {
+        await setDoc(doc(db, 'rooms', cleanCode, 'players', clientId), myPlayer, { merge: true });
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.WRITE, `rooms/${cleanCode}/players/${clientId}`);
+      }
     }
 
     return {
@@ -361,8 +381,8 @@ export const firebaseMultiplayer = {
         playerClass: '7A',
         role: 'crew',
         color: '#4aa3df',
-        x: 520,
-        y: 430,
+        x: 920,
+        y: 760,
         dir: 1,
         hp: config.crewLives,
         maxHp: config.crewLives,
@@ -415,17 +435,9 @@ export const firebaseMultiplayer = {
       await updateDoc(doc(db, 'rooms', cleanCode, 'players', p.id), updatedData as any);
     }
 
-    // Generate stations
-    const stations: TaskStation[] = [
-      { i: 0, x: 260, y: 220, roomIndex: 0 },
-      { i: 1, x: 740, y: 220, roomIndex: 1 },
-      { i: 2, x: 260, y: 460, roomIndex: 2 },
-      { i: 3, x: 740, y: 460, roomIndex: 3 },
-      { i: 4, x: 500, y: 340, roomIndex: 4 },
-      { i: 5, x: 500, y: 580, roomIndex: 5 },
-      { i: 6, x: 180, y: 340, roomIndex: 6 },
-      { i: 7, x: 820, y: 340, roomIndex: 7 }
-    ];
+    // Generate randomized stations distributed across rooms
+    const stationCount = Math.max(config.tasksToWin, 8);
+    const stations: TaskStation[] = generateRandomizedStations(stationCount);
 
     // Select randomized questions
     let finalQuestions = questionsPool;
@@ -464,8 +476,8 @@ export const firebaseMultiplayer = {
       playerClass: '7A',
       role: 'crew',
       color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)],
-      x: 450 + Math.random() * 100,
-      y: 420 + Math.random() * 100,
+      x: 880 + Math.random() * 80,
+      y: 750 + Math.random() * 80,
       dir: 1,
       hp: config.crewLives,
       maxHp: config.crewLives,

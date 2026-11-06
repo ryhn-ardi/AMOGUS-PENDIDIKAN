@@ -4,43 +4,34 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() > 0 && id.size() <= 64;
     }
 
-    // Default deny
+    // Default deny for unhandled paths
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Rooms collection: public read, write for creating and updating rooms
+    // Connection test probe
+    match /rooms/__connection_test__ {
+      allow read, write: if true;
+    }
+
+    // Rooms collection: open read, write, and update for multiplayer coordination
     match /rooms/{roomCode} {
       allow read: if isValidId(roomCode);
-      allow create, update: if isValidId(roomCode)
-        && request.resource.data.code is string
-        && request.resource.data.code.size() <= 16
-        && request.resource.data.hostId is string
-        && request.resource.data.hostName is string
-        && request.resource.data.hostName.size() <= 32
-        && (request.resource.data.status in ['lobby', 'playing', 'ended']);
-      allow delete: if isValidId(roomCode);
+      allow create, update, delete: if isValidId(roomCode);
 
-      // Players subcollection: allows participants to read and update their own state
+      // Players subcollection: allows all participants to join, update position, hp, tasks, or leave
       match /players/{playerId} {
         allow read: if isValidId(roomCode) && isValidId(playerId);
-        allow create, update: if isValidId(roomCode) && isValidId(playerId)
-          && request.resource.data.id is string
-          && request.resource.data.name is string
-          && request.resource.data.name.size() <= 24;
-        allow delete: if isValidId(roomCode) && isValidId(playerId);
+        allow create, update, delete: if isValidId(roomCode) && isValidId(playerId);
       }
 
-      // Events subcollection (chats, bullet triggers, announcements)
+      // Events subcollection: live chat, bullets, eliminations, game start announcements
       match /events/{eventId} {
         allow read: if isValidId(roomCode) && isValidId(eventId);
-        allow create: if isValidId(roomCode) && isValidId(eventId)
-          && request.resource.data.type is string
-          && request.resource.data.type.size() <= 32;
-        allow update, delete: if false;
+        allow create, update, delete: if isValidId(roomCode) && isValidId(eventId);
       }
     }
   }

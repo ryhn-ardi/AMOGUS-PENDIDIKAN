@@ -11,6 +11,7 @@ export interface Player {
   id: string;
   name: string;
   playerClass?: string; // Kelas siswa (contoh: "7A", "8-B", "Kelas 9")
+  attendanceNumber?: string; // Nomor absen siswa (contoh: "12", "05")
   role: PlayerRole;
   color: string;
   x: number;
@@ -81,6 +82,7 @@ export interface LeaderboardEntry {
   id: string;
   name: string;
   playerClass?: string;
+  attendanceNumber?: string;
   role: PlayerRole;
   isMe: boolean;
   color: string;

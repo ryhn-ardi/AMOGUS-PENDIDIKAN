@@ -39,6 +39,7 @@ export const api = {
     roomCode?: string;
     name: string;
     playerClass: string;
+    attendanceNumber?: string;
     config?: GameConfig;
     questions?: Question[];
     isSpectator?: boolean;
@@ -53,6 +54,7 @@ export const api = {
     roomCode: string;
     name: string;
     playerClass: string;
+    attendanceNumber?: string;
     isSpectator?: boolean;
   }) {
     return await firebaseMultiplayer.joinRoom(params);

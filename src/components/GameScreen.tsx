@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Player, Question, TaskStation, GameBullet, GameConfig, MatchSummary, OnlineRoomData } from '../types/game';
 import { sounds } from '../utils/sound';
 import { calculateLeaderboard, saveMatchResult } from '../utils/leaderboard';
-import { Shield, Skull, Eye, Volume2, VolumeX, LogOut, CheckCircle, Zap } from 'lucide-react';
+import { Shield, Skull, Eye, Volume2, VolumeX, LogOut, CheckCircle, Zap, DoorOpen, Gamepad2 } from 'lucide-react';
 import { api } from '../utils/network';
 import { firebaseMultiplayer } from '../utils/firebaseMultiplayer';
 
@@ -12,6 +12,7 @@ interface Props {
   isSpectator: boolean;
   playerName: string;
   playerClass?: string;
+  attendanceNumber?: string;
   ws?: WebSocket | null;
   onlineRoom?: OnlineRoomData | null;
   initialOnlinePlayers?: Player[];
@@ -44,21 +45,195 @@ const BASE_WALLS: [number, number, number, number][] = [
   BASE_WALLS.push([s[0], RS - 10, s[1], 20]);
 });
 
-const SP6: [number, number][] = [
-  [300, 300], [900, 300], [1500, 300],
-  [300, 900], [900, 900], [1500, 900]
-];
-const SP12: [number, number][] = SP6.flatMap(p => [
-  [p[0] - 130, p[1]],
-  [p[0] + 130, p[1]]
-]);
+export interface RoomDoor {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  isOpen: boolean;
+  openProgress: number; // 0 = closed (solid), 1 = fully open
+  orientation: 'horizontal' | 'vertical';
+  lastInteractedAt: number;
+}
 
-const CP: [number, number][] = [
-  [900, 450], [900, 750], [780, 450], [1020, 450],
-  [780, 750], [1020, 750], [900, 520], [900, 680], [840, 600], [960, 600]
+export const INITIAL_ROOM_DOORS: RoomDoor[] = [
+  // Pintu 1: Antara Perpustakaan & Laboratorium (x: 600, y: 225 - 375)
+  { id: 'door_0_1', name: 'Pintu Lab - Perpus', x: RS - 8, y: 225, w: 16, h: 150, isOpen: false, openProgress: 0, orientation: 'vertical', lastInteractedAt: 0 },
+  // Pintu 2: Antara Laboratorium & Kantin (x: 1200, y: 225 - 375)
+  { id: 'door_1_2', name: 'Pintu Lab - Kantin', x: 2 * RS - 8, y: 225, w: 16, h: 150, isOpen: false, openProgress: 0, orientation: 'vertical', lastInteractedAt: 0 },
+  // Pintu 3: Antara Perpustakaan & Aula (x: 225 - 375, y: 600)
+  { id: 'door_0_3', name: 'Pintu Perpus - Aula', x: 225, y: RS - 8, w: 150, h: 16, isOpen: false, openProgress: 0, orientation: 'horizontal', lastInteractedAt: 0 },
+  // Pintu 4: Antara Laboratorium & Ruang Kelas (x: 825 - 975, y: 600)
+  { id: 'door_1_4', name: 'Pintu Lab - Kelas', x: 825, y: RS - 8, w: 150, h: 16, isOpen: false, openProgress: 0, orientation: 'horizontal', lastInteractedAt: 0 },
+  // Pintu 5: Antara Kantin & Taman (x: 1425 - 1575, y: 600)
+  { id: 'door_2_5', name: 'Pintu Kantin - Taman', x: 1425, y: RS - 8, w: 150, h: 16, isOpen: false, openProgress: 0, orientation: 'horizontal', lastInteractedAt: 0 },
+  // Pintu 6: Antara Aula & Ruang Kelas (x: 600, y: 825 - 975)
+  { id: 'door_3_4', name: 'Pintu Aula - Kelas', x: RS - 8, y: 825, w: 16, h: 150, isOpen: false, openProgress: 0, orientation: 'vertical', lastInteractedAt: 0 },
+  // Pintu 7: Antara Ruang Kelas & Taman (x: 1200, y: 825 - 975)
+  { id: 'door_4_5', name: 'Pintu Kelas - Taman', x: 2 * RS - 8, y: 825, w: 16, h: 150, isOpen: false, openProgress: 0, orientation: 'vertical', lastInteractedAt: 0 }
 ];
+
+// Padat & Solid: Meja, Rak Buku, Meja Lab, Counter Kantin, Panggung Aula, Meja Kelas, Pohon & Kolam Taman
+export interface SolidObstacle {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  name?: string;
+}
+
+export const SOLID_OBSTACLES: SolidObstacle[] = [
+  // Room 0: Perpustakaan (0 - 600, 0 - 600) -> Labirin Rak Buku Perpustakaan
+  { x: 50, y: 55, w: 200, h: 42, name: 'Rak Buku Utara 1' },
+  { x: 350, y: 55, w: 200, h: 42, name: 'Rak Buku Utara 2' },
+  { x: 130, y: 160, w: 42, h: 220, name: 'Rak Ensiklopedia Barat' },
+  { x: 428, y: 160, w: 42, h: 220, name: 'Rak Ensiklopedia Timur' },
+  { x: 235, y: 240, w: 130, h: 65, name: 'Meja Belajar Utama' },
+  { x: 235, y: 390, w: 130, h: 45, name: 'Sofa Baca Perpustakaan' },
+
+  // Room 1: Laboratorium (600 - 1200, 0 - 600) -> Labirin Meja Reagen & Mikroskop
+  { x: 660, y: 55, w: 210, h: 44, name: 'Meja Reagen Lab Utara 1' },
+  { x: 930, y: 55, w: 210, h: 44, name: 'Meja Reagen Lab Utara 2' },
+  { x: 730, y: 175, w: 125, h: 65, name: 'Meja Praktikum Barat' },
+  { x: 945, y: 175, w: 125, h: 65, name: 'Meja Praktikum Timur' },
+  { x: 670, y: 430, w: 140, h: 50, name: 'Lemari Asam Lab' },
+  { x: 990, y: 430, w: 140, h: 50, name: 'Meja Centrifuge & Alat' },
+
+  // Room 2: Kantin (1200 - 1800, 0 - 600) -> Labirin Prasmanan & Meja Makan
+  { x: 1260, y: 55, w: 480, h: 44, name: 'Counter Prasmanan Kantin' },
+  { x: 1310, y: 180, w: 90, h: 70, name: 'Meja Makan Kantin 1' },
+  { x: 1590, y: 180, w: 90, h: 70, name: 'Meja Makan Kantin 2' },
+  { x: 1690, y: 310, w: 48, h: 180, name: 'Kedai Minuman Kantin' },
+  { x: 1310, y: 380, w: 90, h: 70, name: 'Meja Makan Kantin 3' },
+
+  // Room 3: Aula (0 - 600, 600 - 1200) -> Labirin Baris Kursi Aula & Panggung
+  { x: 60, y: 1100, w: 480, h: 60, name: 'Panggung Utama Aula' },
+  // Baris Kursi 1 (celah tengah di x: 230 - 370)
+  { x: 60, y: 690, w: 170, h: 30, name: 'Bangku Aula Baris 1 Kiri' },
+  { x: 370, y: 690, w: 170, h: 30, name: 'Bangku Aula Baris 1 Kanan' },
+  // Baris Kursi 2 (celah samping kiri & kanan)
+  { x: 150, y: 770, w: 300, h: 30, name: 'Bangku Aula Baris 2 Tengah' },
+  // Baris Kursi 3 (celah tengah)
+  { x: 60, y: 850, w: 170, h: 30, name: 'Bangku Aula Baris 3 Kiri' },
+  { x: 370, y: 850, w: 170, h: 30, name: 'Bangku Aula Baris 3 Kanan' },
+  // Baris Kursi 4 (celah samping kiri & kanan)
+  { x: 150, y: 930, w: 300, h: 30, name: 'Bangku Aula Baris 4 Tengah' },
+  { x: 60, y: 1020, w: 85, h: 40, name: 'Meja Operator Audio' },
+
+  // Room 4: Ruang Kelas (600 - 1200, 600 - 1200) -> Labirin Meja Belajar Siswa
+  { x: 800, y: 665, w: 200, h: 40, name: 'Whiteboard & Meja Guru' },
+  { x: 670, y: 745, w: 90, h: 50, name: 'Meja Siswa Kelompok 1' },
+  { x: 1040, y: 745, w: 90, h: 50, name: 'Meja Siswa Kelompok 2' },
+  { x: 740, y: 865, w: 110, h: 50, name: 'Meja Siswa Kelompok 3' },
+  { x: 950, y: 865, w: 110, h: 50, name: 'Meja Siswa Kelompok 4' },
+  { x: 670, y: 990, w: 90, h: 50, name: 'Meja Siswa Kelompok 5' },
+  { x: 1040, y: 990, w: 90, h: 50, name: 'Meja Siswa Kelompok 6' },
+  { x: 860, y: 1120, w: 80, h: 36, name: 'Lemari Arsip Kelas' },
+
+  // Room 5: Taman (1200 - 1800, 600 - 1200) -> Labirin Pagar Semak & Kolam Ikan
+  { x: 1290, y: 690, w: 180, h: 34, name: 'Pagar Semak Hijau 1' },
+  { x: 1560, y: 690, w: 170, h: 34, name: 'Pagar Semak Hijau 2' },
+  { x: 1450, y: 810, w: 130, h: 80, name: 'Kolam Ikan Koi' },
+  { x: 1450, y: 970, w: 180, h: 34, name: 'Pagar Semak Bunga' },
+  { x: 1290, y: 960, w: 90, h: 65, name: 'Gazebo Santai Taman' },
+  { x: 1270, y: 1110, w: 55, h: 55, name: 'Pohon Rindang Barat' },
+  { x: 1715, y: 1110, w: 55, h: 55, name: 'Pohon Rindang Timur' },
+  { x: 1715, y: 770, w: 55, h: 55, name: 'Pohon Cemara Taman' }
+];
+
+// Semua rintangan dinding + perabotan padat
+export const ALL_OBSTACLES: [number, number, number, number][] = [
+  ...BASE_WALLS,
+  ...SOLID_OBSTACLES.map(o => [o.x, o.y, o.w, o.h] as [number, number, number, number])
+];
+
+// Pemeriksaan tabrakan umum terhadap rintangan padat
+export function checkCollisionAt(x: number, y: number, r: number = 18): boolean {
+  for (const w of ALL_OBSTACLES) {
+    const cx = Math.max(w[0], Math.min(x, w[0] + w[2]));
+    const cy = Math.max(w[1], Math.min(y, w[1] + w[3]));
+    if ((x - cx) ** 2 + (y - cy) ** 2 < r * r) return true;
+  }
+  return false;
+}
+
+// Penentu Posisi Spawn Bebas Macet (Pencegah Karakter Terjebak Objek Padat)
+export function getSafeSpawn(
+  preferredX: number,
+  preferredY: number,
+  radius: number = 20
+): [number, number] {
+  if (!checkCollisionAt(preferredX, preferredY, radius)) {
+    return [preferredX, preferredY];
+  }
+
+  // Spiral ke luar mencari ruang bebas terdekat
+  for (let dist = 15; dist <= 350; dist += 15) {
+    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 8) {
+      const tx = Math.round(preferredX + Math.cos(angle) * dist);
+      const ty = Math.round(preferredY + Math.sin(angle) * dist);
+      if (tx < 50 || tx > W - 50 || ty < 50 || ty > H - 50) continue;
+      if (!checkCollisionAt(tx, ty, radius)) {
+        return [tx, ty];
+      }
+    }
+  }
+
+  // Koordinat fallback aman di lorong terbuka kelas
+  return [880, 750];
+}
+
+// Calon Lokasi Stasiun Soal Acak per Ruangan (bebas dari rintangan padat)
+export const CANDIDATE_ROOM_STATIONS: Record<number, [number, number][]> = {
+  // Room 0: Perpustakaan (0 - 600, 0 - 600)
+  0: [[75, 270], [290, 150], [520, 270], [290, 490], [80, 480], [510, 480]],
+  // Room 1: Laboratorium (600 - 1200, 0 - 600)
+  1: [[690, 310], [900, 310], [1110, 310], [900, 490], [890, 130], [1110, 130]],
+  // Room 2: Kantin (1200 - 1800, 0 - 600)
+  2: [[1480, 180], [1480, 340], [1355, 290], [1595, 340], [1480, 490], [1650, 490]],
+  // Room 3: Aula (0 - 600, 600 - 1200)
+  3: [[300, 640], [300, 810], [300, 990], [100, 770], [500, 770], [100, 930]],
+  // Room 4: Ruang Kelas (600 - 1200, 600 - 1200)
+  4: [[900, 750], [900, 960], [790, 810], [1010, 810], [750, 1070], [1050, 1070]],
+  // Room 5: Taman (1200 - 1800, 600 - 1200)
+  5: [[1380, 760], [1630, 760], [1370, 890], [1630, 890], [1400, 1070], [1600, 1070]]
+};
+
+// Fungsi pengacak stasiun soal merata di tiap ruangan
+export function generateRandomizedStations(count: number = 8): TaskStation[] {
+  const stations: TaskStation[] = [];
+  const rooms = [0, 1, 2, 3, 4, 5];
+  const shuffledRooms = [...rooms].sort(() => Math.random() - 0.5);
+
+  let stationIndex = 0;
+  for (let i = 0; i < count; i++) {
+    const roomIdx = shuffledRooms[i % shuffledRooms.length];
+    const candidates = CANDIDATE_ROOM_STATIONS[roomIdx];
+    const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+    const jitterX = Math.round((Math.random() - 0.5) * 20);
+    const jitterY = Math.round((Math.random() - 0.5) * 20);
+
+    stations.push({
+      i: stationIndex++,
+      x: chosen[0] + jitterX,
+      y: chosen[1] + jitterY,
+      roomIndex: roomIdx
+    });
+  }
+
+  return stations;
+}
+
+// Spawn Point Kru Detektif (Pasti Bersih & Jauh dari Perabotan / Meja / Dinding)
+const CP: [number, number][] = [
+  [880, 750], [920, 750], [880, 960], [920, 960],
+  [860, 810], [940, 810], [300, 640], [300, 990]
+];
+// Spawn Point Penyusup (Pasti Bersih di 4 Sudut Bebas Rintangan)
 const IP: [number, number][] = [
-  [100, 100], [1700, 1100], [1700, 100], [100, 1100]
+  [80, 140], [1720, 140], [80, 640], [1720, 640]
 ];
 
 const BOT_CREW_NAMES = ["Rani", "Budi", "Sari", "Dimas", "Alya", "Reza", "Putri", "Gilang"];
@@ -72,6 +247,7 @@ export const GameScreen: React.FC<Props> = ({
   isSpectator,
   playerName,
   playerClass = 'Umum',
+  attendanceNumber = '',
   ws = null,
   onlineRoom = null,
   initialOnlinePlayers,
@@ -109,6 +285,9 @@ export const GameScreen: React.FC<Props> = ({
   const [survivingImps, setSurvivingImps] = useState<number>(config.impostorsCount);
   const [totalCrew, setTotalCrew] = useState<number>(4);
 
+  // Door interaction state
+  const [nearDoor, setNearDoor] = useState<RoomDoor | null>(null);
+
   // Mutable Game Loop State
   const gameRef = useRef<{
     t: number;
@@ -122,6 +301,8 @@ export const GameScreen: React.FC<Props> = ({
     quizStartTime: number;
     activeStationIndex: number | null;
     lastNetSyncTime: number;
+    doors: RoomDoor[];
+    joystickVector: { x: number; y: number };
   }>({
     t: 0,
     over: false,
@@ -133,7 +314,9 @@ export const GameScreen: React.FC<Props> = ({
     deck: [],
     quizStartTime: 0,
     activeStationIndex: null,
-    lastNetSyncTime: 0
+    lastNetSyncTime: 0,
+    doors: INITIAL_ROOM_DOORS.map(d => ({ ...d })),
+    joystickVector: { x: 0, y: 0 }
   });
 
   const bannerTimeoutRef = useRef<any>(null);
@@ -162,13 +345,45 @@ export const GameScreen: React.FC<Props> = ({
   }, [questions]);
 
   const isWallHit = (x: number, y: number, r: number) => {
-    for (const w of BASE_WALLS) {
+    for (const w of ALL_OBSTACLES) {
       const cx = Math.max(w[0], Math.min(x, w[0] + w[2]));
       const cy = Math.max(w[1], Math.min(y, w[1] + w[3]));
       if ((x - cx) ** 2 + (y - cy) ** 2 < r * r) return true;
     }
+    // Cek pintu ruangan yang tertutup (jika progress < 0.7 maka padat dan memblokir)
+    const doors = gameRef.current.doors;
+    if (doors) {
+      for (const d of doors) {
+        if (d.openProgress < 0.7) {
+          const cx = Math.max(d.x, Math.min(x, d.x + d.w));
+          const cy = Math.max(d.y, Math.min(y, d.y + d.h));
+          if ((x - cx) ** 2 + (y - cy) ** 2 < r * r) return true;
+        }
+      }
+    }
     return false;
   };
+
+  const toggleDoor = useCallback((doorId: string) => {
+    const g = gameRef.current;
+    const door = g.doors.find(d => d.id === doorId);
+    if (!door) return;
+
+    door.isOpen = !door.isOpen;
+    (door as any).closeTimer = g.t + 5.0; // Pintu otomatis menutup kembali setelah 5 detik
+    door.lastInteractedAt = g.t;
+    sounds.playDoor(door.isOpen);
+    showBanner(door.isOpen ? `${door.name} Terbuka!` : `${door.name} Ditutup!`);
+
+    if (onlineRoom) {
+      const payload = { doorId, isOpen: door.isOpen };
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'toggle_door', ...payload }));
+      }
+      api.sendAction(onlineRoom.code, 'toggle_door', payload).catch(() => {});
+      firebaseMultiplayer.sendEvent(onlineRoom.code, 'toggle_door', payload).catch(() => {});
+    }
+  }, [onlineRoom, ws, showBanner]);
 
   const moveEntity = (p: Player, dx: number, dy: number, r = 13) => {
     if (!isWallHit(p.x + dx, p.y, r)) p.x += dx;
@@ -513,22 +728,22 @@ export const GameScreen: React.FC<Props> = ({
     g.bullets = [];
     g.deck = [];
     g.keys = {};
+    g.doors = INITIAL_ROOM_DOORS.map(d => ({ ...d }));
+    g.joystickVector = { x: 0, y: 0 };
 
     // Online Mode setup
     if (onlineRoom && initialOnlinePlayers && initialOnlinePlayers.length > 0) {
       g.stations = (initialStations && initialStations.length > 0)
         ? initialStations
-        : (initialOnlinePlayers.length >= 6 ? SP12 : SP6).map((p, i) => ({
-            i,
-            x: p[0],
-            y: p[1],
-            roomIndex: getRoomAt(p[0], p[1])
-          }));
+        : generateRandomizedStations(Math.max(config.tasksToWin, 8));
 
       g.players = initialOnlinePlayers.map(p => {
         const isMe = p.id === myPlayerId || p.isMe;
+        const [safeX, safeY] = getSafeSpawn(p.x, p.y);
         return {
           ...p,
+          x: safeX,
+          y: safeY,
           isMe,
           isAI: false
         };
@@ -551,13 +766,8 @@ export const GameScreen: React.FC<Props> = ({
     } 
     // Solo / Practice Mode setup with AI Bots
     else {
-      const stationSpots = isSpectator ? SP12 : SP6;
-      g.stations = stationSpots.map((p, i) => ({
-        i,
-        x: p[0],
-        y: p[1],
-        roomIndex: getRoomAt(p[0], p[1])
-      }));
+      const stationCount = isSpectator ? 10 : Math.max(config.tasksToWin, 6);
+      g.stations = generateRandomizedStations(stationCount);
 
       const crewCount = isSpectator ? 6 : 4;
       setTotalCrew(crewCount);
@@ -566,14 +776,16 @@ export const GameScreen: React.FC<Props> = ({
 
       const crew: Player[] = Array.from({ length: crewCount }, (_, i) => {
         const isMe = !isSpectator && i === 0;
+        const [spawnX, spawnY] = getSafeSpawn(CP[i % CP.length][0], CP[i % CP.length][1]);
         return {
           id: `crew-${i}`,
           name: isMe ? (playerName || 'Kamu') : BOT_CREW_NAMES[i % BOT_CREW_NAMES.length],
           playerClass: isMe ? playerClass : BOT_CLASSES[i % BOT_CLASSES.length],
+          attendanceNumber: isMe ? (attendanceNumber || '01') : String(i + 1).padStart(2, '0'),
           role: 'crew',
           color: CREW_COLORS[i % CREW_COLORS.length],
-          x: CP[i % CP.length][0],
-          y: CP[i % CP.length][1],
+          x: spawnX,
+          y: spawnY,
           dir: 1,
           hp: config.crewLives,
           maxHp: config.crewLives,
@@ -598,37 +810,40 @@ export const GameScreen: React.FC<Props> = ({
         };
       });
 
-      const imps: Player[] = Array.from({ length: config.impostorsCount }, (_, i) => ({
-        id: `imp-${i}`,
-        name: BOT_IMP_NAMES[i % BOT_IMP_NAMES.length],
-        playerClass: 'Penyusup',
-        role: 'impostor',
-        color: '#e0463c',
-        x: IP[i % IP.length][0],
-        y: IP[i % IP.length][1],
-        dir: 1,
-        angle: Math.random() * Math.PI * 2,
-        hp: 1,
-        maxHp: 1,
-        dead: false,
-        isMe: false,
-        isAI: true,
-        eliminatedAt: null,
-        survivedUntilEnd: true,
-        doneTasks: 0,
-        totalAttempts: 0,
-        correctAnswers: 0,
-        wrongAnswers: 0,
-        taskDurations: [],
-        shieldEndTime: 0,
-        shieldCooldownUntil: 0,
-        invulnerableUntil: 0,
-        freezeUntil: 0,
-        workUntil: 0,
-        shootCooldownUntil: 2.0,
-        completedBitmask: 0,
-        lockedStations: {}
-      }));
+      const imps: Player[] = Array.from({ length: config.impostorsCount }, (_, i) => {
+        const [spawnX, spawnY] = getSafeSpawn(IP[i % IP.length][0], IP[i % IP.length][1]);
+        return {
+          id: `imp-${i}`,
+          name: BOT_IMP_NAMES[i % BOT_IMP_NAMES.length],
+          playerClass: 'Penyusup',
+          role: 'impostor',
+          color: '#e0463c',
+          x: spawnX,
+          y: spawnY,
+          dir: 1,
+          angle: Math.random() * Math.PI * 2,
+          hp: 1,
+          maxHp: 1,
+          dead: false,
+          isMe: false,
+          isAI: true,
+          eliminatedAt: null,
+          survivedUntilEnd: true,
+          doneTasks: 0,
+          totalAttempts: 0,
+          correctAnswers: 0,
+          wrongAnswers: 0,
+          taskDurations: [],
+          shieldEndTime: 0,
+          shieldCooldownUntil: 0,
+          invulnerableUntil: 0,
+          freezeUntil: 0,
+          workUntil: 0,
+          shootCooldownUntil: 2.0,
+          completedBitmask: 0,
+          lockedStations: {}
+        };
+      });
 
       g.players = [...crew, ...imps];
       g.myPlayer = isSpectator ? null : crew[0];
@@ -698,6 +913,13 @@ export const GameScreen: React.FC<Props> = ({
           sounds.playHit();
         }
         if (payload.message) showBanner(payload.message);
+      } else if (type === 'toggle_door') {
+        const door = g.doors.find(d => d.id === payload.doorId);
+        if (door) {
+          door.isOpen = payload.isOpen;
+          (door as any).closeTimer = g.t + 5.0;
+          sounds.playDoor(door.isOpen);
+        }
       } else if (type === 'game_over') {
         g.over = true;
         if (payload.summary) {
@@ -772,9 +994,21 @@ export const GameScreen: React.FC<Props> = ({
           interactTask();
         }
       }
-      if (e.key === 'q' || e.key === 'Q' || e.key === 'f' || e.key === 'F') {
+      if (e.key === 'q' || e.key === 'Q') {
         if (g.myPlayer) {
           triggerSkill(g.myPlayer);
+        }
+      }
+      if (e.key === 'f' || e.key === 'F') {
+        if (g.myPlayer) {
+          for (const d of g.doors) {
+            const cx = d.x + d.w / 2;
+            const cy = d.y + d.h / 2;
+            if (Math.hypot(g.myPlayer.x - cx, g.myPlayer.y - cy) < 80) {
+              toggleDoor(d.id);
+              break;
+            }
+          }
         }
       }
     };
@@ -798,6 +1032,19 @@ export const GameScreen: React.FC<Props> = ({
 
       if (!g.over) {
         g.t += dt;
+
+        // 0. Update Pintu Geser Antar Ruangan
+        for (const door of g.doors) {
+          if (door.isOpen) {
+            door.openProgress = Math.min(1.0, door.openProgress + dt * 3.5);
+            if (g.t > ((door as any).closeTimer || 0)) {
+              door.isOpen = false;
+              sounds.playDoor(false);
+            }
+          } else {
+            door.openProgress = Math.max(0.0, door.openProgress - dt * 3.5);
+          }
+        }
 
         // 1. Update Crew
         for (const c of g.players.filter(p => p.role === 'crew')) {
@@ -861,11 +1108,16 @@ export const GameScreen: React.FC<Props> = ({
             if (c.workUntil <= g.t) {
               let dx = (g.keys.right ? 1 : 0) - (g.keys.left ? 1 : 0);
               let dy = (g.keys.down ? 1 : 0) - (g.keys.up ? 1 : 0);
+              if (g.joystickVector && (Math.abs(g.joystickVector.x) > 0.08 || Math.abs(g.joystickVector.y) > 0.08)) {
+                dx = g.joystickVector.x;
+                dy = g.joystickVector.y;
+              }
               if (dx !== 0 || dy !== 0) {
                 const len = Math.hypot(dx, dy);
                 if (dx !== 0) c.dir = dx > 0 ? 1 : -1;
                 const speed = getSpeed(c);
-                moveEntity(c, (dx / len) * speed * dt, (dy / len) * speed * dt);
+                const moveMag = Math.min(1.0, len);
+                moveEntity(c, (dx / len) * moveMag * speed * dt, (dy / len) * moveMag * speed * dt);
               }
             }
           }
@@ -938,12 +1190,17 @@ export const GameScreen: React.FC<Props> = ({
           } else if (imp.isMe) {
             let dx = (g.keys.right ? 1 : 0) - (g.keys.left ? 1 : 0);
             let dy = (g.keys.down ? 1 : 0) - (g.keys.up ? 1 : 0);
+            if (g.joystickVector && (Math.abs(g.joystickVector.x) > 0.08 || Math.abs(g.joystickVector.y) > 0.08)) {
+              dx = g.joystickVector.x;
+              dy = g.joystickVector.y;
+            }
             if (dx !== 0 || dy !== 0) {
               const len = Math.hypot(dx, dy);
               if (dx !== 0) imp.dir = dx > 0 ? 1 : -1;
               imp.angle = Math.atan2(dy, dx);
               const speed = getSpeed(imp);
-              moveEntity(imp, (dx / len) * speed * dt, (dy / len) * speed * dt);
+              const moveMag = Math.min(1.0, len);
+              moveEntity(imp, (dx / len) * moveMag * speed * dt, (dy / len) * moveMag * speed * dt);
             }
           }
         }
@@ -1000,6 +1257,20 @@ export const GameScreen: React.FC<Props> = ({
           setShieldCooldownLeft(Math.max(0, Math.ceil(g.myPlayer.shieldCooldownUntil - g.t)));
           setIsShieldActive(g.myPlayer.shieldEndTime > g.t);
           setCanInteractTask(!!findNearStation(g.myPlayer, g.t));
+
+          // Deteksi Pintu Terdekat untuk Interaksi Buka/Tutup
+          let closestDoor: RoomDoor | null = null;
+          let minD = 85;
+          for (const d of g.doors) {
+            const cx = d.x + d.w / 2;
+            const cy = d.y + d.h / 2;
+            const dist = Math.hypot(g.myPlayer.x - cx, g.myPlayer.y - cy);
+            if (dist < minD) {
+              minD = dist;
+              closestDoor = d;
+            }
+          }
+          setNearDoor(closestDoor);
         }
 
         const crewAlive = g.players.filter(p => p.role === 'crew' && !p.dead).length;
@@ -1102,6 +1373,11 @@ export const GameScreen: React.FC<Props> = ({
     ctx.fillStyle = '#6c8f7c';
     for (const w of BASE_WALLS) {
       ctx.fillRect(w[0], w[1], w[2], w[3]);
+    }
+
+    // Room Doors
+    for (const d of g.doors) {
+      drawDoor(ctx, d, t);
     }
 
     // Stations
@@ -1248,96 +1524,275 @@ export const GameScreen: React.FC<Props> = ({
     ctx.restore();
   };
 
-  // Furniture Helper
+  // Furniture Helper: Menggambar Labirin Mini Perabotan Sesuai Tema Ruangan
   const drawFurniture = (ctx: CanvasRenderingContext2D, roomIdx: number, rx: number, ry: number) => {
     ctx.save();
-    ctx.translate(rx, ry);
-    ctx.scale(S, S);
-
+    // Helper shapes menggambar di koordinat absolut ruangan
     const R = (c: string, a: number, b: number, w: number, h: number) => {
       ctx.fillStyle = c;
-      ctx.fillRect(a, b, w, h);
+      ctx.fillRect(rx + a, ry + b, w, h);
     };
     const C = (c: string, a: number, b: number, r: number) => {
       ctx.fillStyle = c;
       ctx.beginPath();
-      ctx.arc(a, b, r, 0, Math.PI * 2);
+      ctx.arc(rx + a, ry + b, r, 0, Math.PI * 2);
       ctx.fill();
     };
 
-    if (roomIdx === 0) { // Perpustakaan
-      [30, 250].forEach(a => {
-        R("#6b4a2b", a, 52, 120, 34);
-        for (let k = 0; k < 10; k++) {
-          R(["#c0504d", "#4f81bd", "#9bbb59", "#f5d547"][k % 4], a + 6 + k * 11, 58, 8, 22);
+    if (roomIdx === 0) { // Perpustakaan (0 - 600, 0 - 600) -> Labirin Rak Buku
+      // Rak Buku Utara 1 (x: 50, y: 55, w: 200, h: 42) & Utara 2 (x: 350, y: 55, w: 200, h: 42)
+      [50, 350].forEach(shelfX => {
+        R("#5b3d22", shelfX, 55, 200, 42);
+        R("#7a5230", shelfX + 4, 58, 192, 36);
+        for (let k = 0; k < 18; k++) {
+          R(["#c0504d", "#4f81bd", "#9bbb59", "#f5d547", "#8c564b"][k % 5], shelfX + 8 + k * 10, 60, 8, 30);
         }
       });
-      [[45, 285], [265, 285]].forEach(p => {
-        R("#8a5d34", p[0], p[1], 90, 44);
-        R("#a67545", p[0], p[1], 90, 6);
-        C("#5b3a1e", p[0] + 20, p[1] + 58, 8);
-        C("#5b3a1e", p[0] + 70, p[1] + 58, 8);
+      // Rak Ensiklopedia Barat (x: 130, y: 160, w: 42, h: 220) & Timur (x: 428, y: 160, w: 42, h: 220)
+      [130, 428].forEach(stackX => {
+        R("#5b3d22", stackX, 160, 42, 220);
+        R("#7a5230", stackX + 3, 163, 36, 214);
+        for (let k = 0; k < 15; k++) {
+          R(["#c0504d", "#4f81bd", "#9bbb59", "#e8a33d"][k % 4], stackX + 5, 166 + k * 14, 32, 10);
+        }
       });
-      R("#7a3b3b", 160, 330, 80, 40);
-    } else if (roomIdx === 1) { // Laboratorium
-      [30, 250].forEach(a => {
-        R("#cfd8dc", a, 52, 120, 34);
-        R("#90a4ae", a, 80, 120, 6);
-        C("#e46a6a", a + 25, 50, 8);
-        C("#6ad1e4", a + 60, 50, 8);
-        C("#9be46a", a + 95, 50, 8);
+      // Meja Belajar Utama (x: 235, y: 240, w: 130, h: 65)
+      R("#6b4321", 235, 240, 130, 65);
+      R("#8d5930", 238, 243, 124, 59);
+      C("#f5d547", 260, 272, 6);
+      C("#f5d547", 340, 272, 6);
+      R("#ffffff", 285, 260, 30, 24);
+      C("#4a2e18", 225, 272, 8);
+      C("#4a2e18", 375, 272, 8);
+
+      // Sofa Baca Perpustakaan (x: 235, y: 390, w: 130, h: 45)
+      R("#7a3030", 235, 390, 130, 45);
+      R("#9c4242", 238, 393, 124, 39);
+      R("#612323", 235, 390, 15, 45);
+      R("#612323", 350, 390, 15, 45);
+    } else if (roomIdx === 1) { // Laboratorium (600 - 1200, 0 - 600) -> Labirin Meja Reagen & Mikroskop
+      // Meja Reagen Utara 1 & 2
+      [60, 330].forEach(bx => {
+        R("#cfd8dc", bx, 55, 210, 44);
+        R("#90a4ae", bx, 55, 210, 8);
+        for (let k = 0; k < 6; k++) {
+          C(["#e74c3c", "#3498db", "#2ecc71", "#f1c40f"][k % 4], bx + 25 + k * 32, 75, 7);
+        }
       });
-      [[40, 290], [270, 290]].forEach(p => {
-        R("#cfd8dc", p[0], p[1], 90, 36);
-        R("#90a4ae", p[0], p[1] + 32, 90, 6);
-        R("#37474f", p[0] + 15, p[1] - 12, 14, 14);
-        R("#37474f", p[0] + 55, p[1] - 12, 14, 14);
+      // Meja Praktikum Barat & Timur
+      [130, 345].forEach(mx => {
+        R("#b0bec5", mx, 175, 125, 65);
+        R("#eceff1", mx + 3, 178, 119, 59);
+        R("#263238", mx + 25, 195, 16, 16);
+        R("#263238", mx + 85, 195, 16, 16);
+        C("#37474f", mx + 33, 190, 6);
+        C("#37474f", mx + 93, 190, 6);
       });
-    } else if (roomIdx === 2) { // Kantin
-      R("#8a5d34", 40, 50, 320, 36);
-      R("#c28d55", 40, 50, 320, 8);
+      // Lemari Asam Lab (70, 430, 140, 50)
+      R("#37474f", 70, 430, 140, 50);
+      R("#78909c", 75, 435, 130, 40);
+      R("#80deea", 85, 440, 110, 24);
+      // Meja Centrifuge & Alat (390, 430, 140, 50)
+      R("#cfd8dc", 390, 430, 140, 50);
+      C("#546e7a", 430, 455, 14);
+      C("#546e7a", 490, 455, 14);
+      C("#e0e0e0", 430, 455, 8);
+      C("#e0e0e0", 490, 455, 8);
+    } else if (roomIdx === 2) { // Kantin (1200 - 1800, 0 - 600) -> Labirin Prasmanan & Meja Makan
+      // Counter Prasmanan
+      R("#8a5d34", 60, 55, 480, 44);
+      R("#c28d55", 60, 55, 480, 8);
+      for (let k = 0; k < 10; k++) {
+        R(["#e8a33d", "#c0504d", "#9bbb59", "#d4ac0d"][k % 4], 85 + k * 44, 70, 28, 18);
+      }
+      // Meja Makan 1, 2, 3
+      [[110, 180], [390, 180], [110, 380]].forEach(([tx, ty]) => {
+        R("#6b4a2b", tx, ty, 90, 70);
+        R("#8d5930", tx + 4, ty + 4, 82, 62);
+        C("#3b3b3b", tx + 20, ty - 6, 8);
+        C("#3b3b3b", tx + 70, ty - 6, 8);
+        C("#3b3b3b", tx + 20, ty + 76, 8);
+        C("#3b3b3b", tx + 70, ty + 76, 8);
+      });
+      // Kedai Minuman
+      R("#2c3e50", 490, 310, 48, 180);
+      R("#34495e", 494, 314, 40, 172);
       for (let k = 0; k < 6; k++) {
-        C(["#e8a33d", "#c0504d", "#9bbb59"][k % 3], 70 + k * 48, 68, 9);
+        C(["#e74c3c", "#f39c12", "#1abc9c"][k % 3], 514, 330 + k * 26, 7);
       }
-      [[70, 300], [330, 300], [330, 130], [70, 160]].forEach(p => {
-        C("#6b4a2b", p[0], p[1], 26);
-        C("#a67545", p[0], p[1], 22);
-        [-1, 1].forEach(s => C("#3b3b3b", p[0] + s * 36, p[1], 9));
+    } else if (roomIdx === 3) { // Aula (0 - 600, 600 - 1200) -> Labirin Baris Kursi Aula & Panggung
+      // Panggung Utama Aula
+      R("#261738", 60, 500, 480, 60);
+      R("#522146", 60, 500, 480, 10);
+      R("#854374", 60, 500, 30, 60);
+      R("#854374", 510, 500, 30, 60);
+      R("#f5d547", 220, 520, 160, 6);
+      // 4 Baris Kursi Aula dengan celah lorong
+      [60, 370].forEach(kx => {
+        R("#5e4a80", kx, 90, 170, 30);
+        R("#463365", kx + 2, 92, 166, 26);
       });
-    } else if (roomIdx === 3) { // Aula
-      R("#2b1d3a", 50, 325, 300, 52);
-      R("#5e2a52", 50, 325, 40, 52);
-      R("#5e2a52", 310, 325, 40, 52);
-      R("#8a6a3a", 50, 372, 300, 6);
-      for (let r = 0; r < 2; r++) {
-        for (let k = 0; k < 10; k++) {
-          R("#7b6aa0", 40 + k * 31, 75 + r * 30, 20, 16);
+      R("#5e4a80", 150, 170, 300, 30);
+      R("#463365", 152, 172, 296, 26);
+      [60, 370].forEach(kx => {
+        R("#5e4a80", kx, 250, 170, 30);
+        R("#463365", kx + 2, 252, 166, 26);
+      });
+      R("#5e4a80", 150, 330, 300, 30);
+      R("#463365", 152, 332, 296, 26);
+      // Meja Operator Audio
+      R("#222", 60, 420, 85, 40);
+      R("#333", 64, 424, 77, 32);
+      for (let k = 0; k < 5; k++) {
+        C(["#2ecc71", "#e74c3c", "#f1c40f"][k % 3], 75 + k * 14, 440, 3);
+      }
+    } else if (roomIdx === 4) { // Ruang Kelas (600 - 1200, 600 - 1200) -> Labirin Meja Belajar Siswa
+      // Papan Tulis & Meja Guru
+      R("#1e3d29", 180, 15, 240, 10);
+      R("#6b4a2b", 200, 65, 200, 40);
+      R("#8d5930", 204, 69, 192, 32);
+      // 6 Kelompok Meja Siswa
+      const studentDesks = [
+        [70, 145, 90, 50],
+        [440, 145, 90, 50],
+        [140, 265, 110, 50],
+        [350, 265, 110, 50],
+        [70, 390, 90, 50],
+        [440, 390, 90, 50]
+      ];
+      studentDesks.forEach(([dx, dy, dw, dh]) => {
+        R("#8d5930", dx, dy, dw, dh);
+        R("#a87140", dx + 3, dy + 3, dw - 6, dh - 6);
+        C("#543d2b", dx + 20, dy - 6, 7);
+        C("#543d2b", dx + dw - 20, dy - 6, 7);
+        C("#543d2b", dx + 20, dy + dh + 6, 7);
+        C("#543d2b", dx + dw - 20, dy + dh + 6, 7);
+      });
+      // Lemari Arsip Kelas
+      R("#455a64", 260, 520, 80, 36);
+      R("#607d8b", 263, 523, 74, 30);
+    } else if (roomIdx === 5) { // Taman (1200 - 1800, 600 - 1200) -> Labirin Semak Pagar Hijau
+      // Pagar Semak
+      [ [90, 90, 180, 34], [360, 90, 170, 34], [250, 370, 180, 34] ].forEach(([hx, hy, hw, hh]) => {
+        R("#1b5e20", hx, hy, hw, hh);
+        R("#2e7d32", hx + 3, hy + 3, hw - 6, hh - 6);
+        for (let k = 0; k < hw; k += 24) {
+          C("#4caf50", hx + k + 10, hy + 12, 6);
+          C("#81c784", hx + k + 16, hy + 22, 5);
         }
-      }
-    } else if (roomIdx === 4) { // Ruang Kelas
-      R("#eceff1", 100, 50, 200, 10);
-      R("#607d8b", 96, 46, 208, 4);
-      R("#8a5d34", 165, 80, 70, 26);
-      [60, 130, 250, 320].forEach(a => [285, 335].forEach(b => {
-        R("#a67545", a, b, 44, 24);
-        R("#6b4a2b", a + 10, b + 26, 24, 8);
-      }));
-    } else if (roomIdx === 5) { // Taman
-      [[60, 80], [340, 90], [70, 330], [340, 330]].forEach(p => {
-        R("#5b3a1e", p[0] - 4, p[1] + 8, 8, 22);
-        C("#1f5a2a", p[0], p[1], 30);
-        C("#2f7a3a", p[0] - 8, p[1] - 8, 20);
       });
-      ctx.fillStyle = "#3b78a8";
+      // Kolam Ikan Koi
+      R("#78909c", 250, 210, 130, 80);
+      ctx.fillStyle = "#1976d2";
       ctx.beginPath();
-      ctx.ellipse(320, 210, 40, 28, 0, 0, Math.PI * 2);
+      ctx.ellipse(rx + 315, ry + 250, 55, 30, 0, 0, Math.PI * 2);
       ctx.fill();
-      R("#8a5d34", 150, 340, 100, 16);
-      R("#5b3a1e", 155, 356, 8, 10);
-      R("#5b3a1e", 237, 356, 8, 10);
-      [[120, 110], [270, 120], [110, 250], [260, 290], [190, 70]].forEach((p, k) => {
-        C(["#f08ca8", "#f5d547", "#fff"][k % 3], p[0], p[1], 5);
+      C("#ff9800", 305, 245, 4);
+      C("#ff5722", 325, 255, 4);
+      C("#388e3c", 285, 240, 6);
+      C("#388e3c", 345, 260, 6);
+
+      // Gazebo Santai
+      R("#5d4037", 90, 360, 90, 65);
+      R("#8d6e63", 94, 364, 82, 57);
+      R("#3e2723", 90, 360, 90, 8);
+
+      // Pohon Rindang
+      [[70, 510], [515, 510], [515, 170]].forEach(([px, py]) => {
+        C("#1b5e20", px + 27, py + 27, 28);
+        C("#2e7d32", px + 22, py + 22, 22);
+        C("#388e3c", px + 16, py + 16, 14);
       });
+    }
+
+    ctx.restore();
+  };
+
+  // Door Renderer: Menggambar Pintu Geser Antar-Ruangan dengan Animasi Geser & Indikator
+  const drawDoor = (ctx: CanvasRenderingContext2D, d: RoomDoor, t: number) => {
+    ctx.save();
+    const isHoriz = d.orientation === 'horizontal';
+
+    // Rangka Kusen Pintu
+    ctx.fillStyle = "#16201b";
+    ctx.fillRect(d.x - 2, d.y - 2, d.w + 4, d.h + 4);
+
+    // Garis Hazard Kuning di Ambang Pintu
+    ctx.strokeStyle = "rgba(245, 213, 71, 0.35)";
+    ctx.lineWidth = 2;
+    if (isHoriz) {
+      for (let sx = d.x; sx < d.x + d.w; sx += 16) {
+        ctx.beginPath();
+        ctx.moveTo(sx, d.y);
+        ctx.lineTo(sx + 8, d.y + d.h);
+        ctx.stroke();
+      }
+    } else {
+      for (let sy = d.y; sy < d.y + d.h; sy += 16) {
+        ctx.beginPath();
+        ctx.moveTo(d.x, sy);
+        ctx.lineTo(d.x + d.w, sy + 8);
+        ctx.stroke();
+      }
+    }
+
+    // Daun Pintu Geser Terbuka / Tertutup
+    const slideOffset = (isHoriz ? d.w / 2 : d.h / 2) * d.openProgress;
+
+    if (isHoriz) {
+      const halfW = d.w / 2;
+      // Panel Kiri
+      ctx.fillStyle = "#3e574c";
+      ctx.fillRect(d.x - slideOffset, d.y, halfW, d.h);
+      ctx.fillStyle = "#273931";
+      ctx.fillRect(d.x - slideOffset + 2, d.y + 2, halfW - 4, d.h - 4);
+      ctx.fillStyle = "#f5d547";
+      ctx.fillRect(d.x - slideOffset + halfW - 6, d.y + 4, 3, d.h - 8);
+
+      // Panel Kanan
+      ctx.fillStyle = "#3e574c";
+      ctx.fillRect(d.x + halfW + slideOffset, d.y, halfW, d.h);
+      ctx.fillStyle = "#273931";
+      ctx.fillRect(d.x + halfW + slideOffset + 2, d.y + 2, halfW - 4, d.h - 4);
+      ctx.fillStyle = "#f5d547";
+      ctx.fillRect(d.x + halfW + slideOffset + 3, d.y + 4, 3, d.h - 8);
+
+      // Lampu Status Sensor Pintu
+      ctx.fillStyle = d.openProgress >= 0.7 ? "#6fd08c" : "#f5d547";
+      ctx.beginPath();
+      ctx.arc(d.x + halfW, d.y + d.h / 2, 4, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const halfH = d.h / 2;
+      // Panel Atas
+      ctx.fillStyle = "#3e574c";
+      ctx.fillRect(d.x, d.y - slideOffset, d.w, halfH);
+      ctx.fillStyle = "#273931";
+      ctx.fillRect(d.x + 2, d.y - slideOffset + 2, d.w - 4, halfH - 4);
+      ctx.fillStyle = "#f5d547";
+      ctx.fillRect(d.x + 4, d.y - slideOffset + halfH - 6, d.w - 8, 3);
+
+      // Panel Bawah
+      ctx.fillStyle = "#3e574c";
+      ctx.fillRect(d.x, d.y + halfH + slideOffset, d.w, halfH);
+      ctx.fillStyle = "#273931";
+      ctx.fillRect(d.x + 2, d.y + halfH + slideOffset + 2, d.w - 4, halfH - 4);
+      ctx.fillStyle = "#f5d547";
+      ctx.fillRect(d.x + 4, d.y + halfH + slideOffset + 3, d.w - 8, 3);
+
+      // Lampu Status Sensor Pintu
+      ctx.fillStyle = d.openProgress >= 0.7 ? "#6fd08c" : "#f5d547";
+      ctx.beginPath();
+      ctx.arc(d.x + d.w / 2, d.y + halfH, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Nama Pintu saat tertutup
+    if (d.openProgress < 0.7) {
+      ctx.fillStyle = "rgba(245, 213, 71, 0.85)";
+      ctx.font = "bold 9px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(d.name, d.x + d.w / 2, d.y - 4);
     }
 
     ctx.restore();
@@ -1477,12 +1932,28 @@ export const GameScreen: React.FC<Props> = ({
           </div>
         )}
 
-        {/* Action Prompt */}
-        {canInteractTask && !activeQuiz && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-xl bg-[#f5d547] text-[#14261f] font-bold text-xs sm:text-sm shadow-xl flex items-center gap-2 animate-bounce cursor-pointer" onClick={interactTask}>
-            <span>Tekan [E] atau [Spasi] untuk Kerjakan Tugas</span>
-          </div>
-        )}
+        {/* Action Prompts */}
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex flex-col sm:flex-row items-center gap-2 pointer-events-auto">
+          {nearDoor && (
+            <button
+              onClick={() => toggleDoor(nearDoor.id)}
+              className="px-4 py-2 rounded-xl bg-[#294237] border-2 border-[#f5d547] text-[#f3efdc] font-bold text-xs sm:text-sm shadow-xl flex items-center gap-2 animate-bounce cursor-pointer hover:bg-[#345245]"
+            >
+              <DoorOpen className="w-4 h-4 text-[#f5d547]" />
+              <span>[F] {nearDoor.isOpen ? 'Tutup' : 'Buka'} {nearDoor.name}</span>
+            </button>
+          )}
+
+          {canInteractTask && !activeQuiz && (
+            <button
+              onClick={interactTask}
+              className="px-4 py-2 rounded-xl bg-[#f5d547] text-[#14261f] font-bold text-xs sm:text-sm shadow-xl flex items-center gap-2 animate-bounce cursor-pointer hover:bg-[#fad85e]"
+            >
+              <Zap className="w-4 h-4" />
+              <span>[E] / [Spasi] Kerjakan Tugas</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Spectator Target Selector */}
@@ -1516,17 +1987,18 @@ export const GameScreen: React.FC<Props> = ({
       {/* Controls Hint & Mobile Virtual D-Pad */}
       <div className="w-full mt-2.5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-[#a9bdb2]">
         <div className="hidden sm:block">
-          Gerak: <strong>WASD</strong> atau <strong>Panah</strong> · Kerjakan Soal: <strong>E</strong> / <strong>Spasi</strong> · Skill Tameng / Tembak: <strong>Q</strong>
+          Gerak: <strong>WASD / Panah</strong> · Tugas: <strong>E / Spasi</strong> · Buka Pintu: <strong>F</strong> · Skill: <strong>Q</strong>
         </div>
 
-        {/* Mobile D-Pad */}
+        {/* Mobile Touch Controls for Android & Mobile Devices */}
         <div className="flex sm:hidden items-center justify-between w-full px-2 py-1">
-          <div className="grid grid-cols-3 grid-rows-3 gap-1 w-32 h-32 select-none">
+          <div className="grid grid-cols-3 grid-rows-3 gap-1 w-36 h-36 select-none touch-none">
             <div></div>
             <button
               onPointerDown={() => handleDpadDown('up')}
               onPointerUp={() => handleDpadUp('up')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-lg flex items-center justify-center text-lg active:bg-[#f5d547] active:text-[#14261f]"
+              onPointerLeave={() => handleDpadUp('up')}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow"
             >
               ▲
             </button>
@@ -1534,15 +2006,19 @@ export const GameScreen: React.FC<Props> = ({
             <button
               onPointerDown={() => handleDpadDown('left')}
               onPointerUp={() => handleDpadUp('left')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-lg flex items-center justify-center text-lg active:bg-[#f5d547] active:text-[#14261f]"
+              onPointerLeave={() => handleDpadUp('left')}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow"
             >
               ◀
             </button>
-            <div></div>
+            <div className="flex items-center justify-center text-[10px] text-[#335a49]">
+              <Gamepad2 className="w-5 h-5 text-[#335a49]" />
+            </div>
             <button
               onPointerDown={() => handleDpadDown('right')}
               onPointerUp={() => handleDpadUp('right')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-lg flex items-center justify-center text-lg active:bg-[#f5d547] active:text-[#14261f]"
+              onPointerLeave={() => handleDpadUp('right')}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow"
             >
               ▶
             </button>
@@ -1550,27 +2026,51 @@ export const GameScreen: React.FC<Props> = ({
             <button
               onPointerDown={() => handleDpadDown('down')}
               onPointerUp={() => handleDpadUp('down')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-lg flex items-center justify-center text-lg active:bg-[#f5d547] active:text-[#14261f]"
+              onPointerLeave={() => handleDpadUp('down')}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow"
             >
               ▼
             </button>
             <div></div>
           </div>
 
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-row items-center gap-2">
+            {/* Tombol Buka Pintu (Mobile) */}
+            <button
+              onClick={() => {
+                if (nearDoor) {
+                  toggleDoor(nearDoor.id);
+                } else if (gameRef.current.doors) {
+                  const p = gameRef.current.myPlayer;
+                  if (p) {
+                    const nearest = gameRef.current.doors.find(d => Math.hypot(p.x - (d.x + d.w/2), p.y - (d.y + d.h/2)) < 90);
+                    if (nearest) toggleDoor(nearest.id);
+                  }
+                }
+              }}
+              className={`w-14 h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95 transition-all ${
+                nearDoor ? 'bg-[#294237] border-2 border-[#f5d547] text-[#f5d547]' : 'bg-[#1d3a2f] border border-[#335a49] text-[#a9bdb2] opacity-70'
+              }`}
+            >
+              <DoorOpen className="w-4 h-4 mb-0.5" />
+              Pintu
+            </button>
+
+            {/* Tombol Skill (Mobile) */}
             <button
               onClick={() => gameRef.current.myPlayer && triggerSkill(gameRef.current.myPlayer)}
-              className="w-16 h-16 rounded-full bg-[#2b6f8f] border-2 border-[#7fdcff] text-[#f3efdc] font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95"
+              className="w-14 h-14 rounded-2xl bg-[#2b6f8f] border-2 border-[#7fdcff] text-[#f3efdc] font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95"
             >
-              <Shield className="w-4 h-4 mb-0.5" />
+              {isImpostor ? <Skull className="w-4 h-4 mb-0.5" /> : <Shield className="w-4 h-4 mb-0.5" />}
               {isImpostor ? 'Tembak' : 'Tameng'}
             </button>
 
+            {/* Tombol Tugas (Mobile) */}
             <button
               onClick={interactTask}
               disabled={!canInteractTask}
-              className={`w-16 h-16 rounded-full font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95 ${
-                canInteractTask ? 'bg-[#f5d547] text-[#14261f]' : 'bg-[#1d3a2f] text-[#a9bdb2] opacity-40'
+              className={`w-14 h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95 transition-all ${
+                canInteractTask ? 'bg-[#f5d547] text-[#14261f] ring-2 ring-[#f5d547]/50' : 'bg-[#1d3a2f] border border-[#335a49] text-[#a9bdb2] opacity-40'
               }`}
             >
               <Zap className="w-4 h-4 mb-0.5" />

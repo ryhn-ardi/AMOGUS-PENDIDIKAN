@@ -5,6 +5,7 @@ import { GameScreen } from './components/GameScreen';
 import { QuestionEditor } from './components/QuestionEditor';
 import { LeaderboardModal } from './components/LeaderboardModal';
 import { OnlineLobby } from './components/OnlineLobby';
+import { AdminLoginModal } from './components/AdminLoginModal';
 import { getMatchHistory } from './utils/leaderboard';
 import { api, getClientId } from './utils/network';
 import { firebaseMultiplayer } from './utils/firebaseMultiplayer';
@@ -23,7 +24,8 @@ import {
   Sparkles,
   Wifi,
   WifiOff,
-  RefreshCw
+  RefreshCw,
+  Lock
 } from 'lucide-react';
 import { sounds } from './utils/sound';
 
@@ -32,12 +34,14 @@ export default function App() {
   const [isSpectator, setIsSpectator] = useState<boolean>(false);
   const [isOnlineMode, setIsOnlineMode] = useState<boolean>(false);
   
-  // Student Identity: Nickname & Kelas
+  // Student Identity: Nickname, Kelas & Nomor Absen
   const [playerName, setPlayerName] = useState<string>('Budi');
   const [playerClass, setPlayerClass] = useState<string>('7A');
+  const [attendanceNumber, setAttendanceNumber] = useState<string>('01');
 
   const [soundOn, setSoundOn] = useState<boolean>(true);
   const [serverOnline, setServerOnline] = useState<boolean>(true);
+  const [showAdminLogin, setShowAdminLogin] = useState<boolean>(false);
 
   // Match Summary & Leaderboard State
   const [lastMatchSummary, setLastMatchSummary] = useState<MatchSummary | null>(null);
@@ -211,6 +215,8 @@ export default function App() {
       if (savedName) setPlayerName(savedName);
       const savedClass = localStorage.getItem('dk_player_class');
       if (savedClass) setPlayerClass(savedClass);
+      const savedAbsen = localStorage.getItem('dk_player_absen');
+      if (savedAbsen) setAttendanceNumber(savedAbsen);
     } catch {}
 
     return () => {
@@ -302,22 +308,33 @@ export default function App() {
     } catch {}
   };
 
+  const handleAttendanceChange = (absen: string) => {
+    const clean = absen.slice(0, 6);
+    setAttendanceNumber(clean);
+    try {
+      localStorage.setItem('dk_player_absen', clean);
+    } catch {}
+  };
+
   // Online Room Handlers (Full REST API + WebSocket Sync)
   const handleCreateRoom = async (
     customCode: string,
     name: string,
     cls: string,
+    absen: string,
     hostConfig: GameConfig,
     qs: Question[],
     spectator: boolean
   ) => {
     handleNameChange(name);
     handleClassChange(cls);
+    handleAttendanceChange(absen);
     try {
       const data = await api.createRoom({
         roomCode: customCode,
         name,
         playerClass: cls,
+        attendanceNumber: absen,
         config: hostConfig,
         questions: qs,
         isSpectator: spectator
@@ -333,14 +350,16 @@ export default function App() {
     }
   };
 
-  const handleJoinRoom = async (code: string, name: string, cls: string, spectator: boolean) => {
+  const handleJoinRoom = async (code: string, name: string, cls: string, absen: string, spectator: boolean) => {
     handleNameChange(name);
     handleClassChange(cls);
+    handleAttendanceChange(absen);
     try {
       const data = await api.joinRoom({
         roomCode: code,
         name,
         playerClass: cls,
+        attendanceNumber: absen,
         isSpectator: spectator
       });
       setOnlineRoom(data.room);
@@ -592,8 +611,8 @@ export default function App() {
               </p>
             </div>
 
-            {/* Identitas Siswa: Nama & Kelas */}
-            <div className="bg-[#1d3a2f] border-2 border-[#335a49] rounded-2xl p-4 max-w-md mx-auto grid grid-cols-2 gap-3 text-left shadow-lg">
+            {/* Identitas Siswa: Nama, Kelas & Nomor Absen */}
+            <div className="bg-[#1d3a2f] border-2 border-[#335a49] rounded-2xl p-4 max-w-lg mx-auto grid grid-cols-1 sm:grid-cols-3 gap-3 text-left shadow-lg">
               <div>
                 <label className="block text-[11px] font-semibold text-[#a9bdb2] uppercase tracking-wider mb-1 flex items-center gap-1">
                   <User className="w-3.5 h-3.5 text-[#f5d547]" />
@@ -621,6 +640,21 @@ export default function App() {
                   placeholder="Contoh: 7A, 8B"
                   className="w-full bg-[#14261f] border border-[#335a49] rounded-xl px-3 py-2 text-sm text-[#f3efdc] font-semibold focus:outline-none focus:border-[#f5d547]"
                   maxLength={16}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#a9bdb2] uppercase tracking-wider mb-1 flex items-center gap-1">
+                  <Sparkles className="w-3.5 h-3.5 text-[#f5d547]" />
+                  Nomor Absen
+                </label>
+                <input
+                  type="text"
+                  value={attendanceNumber}
+                  onChange={(e) => handleAttendanceChange(e.target.value)}
+                  placeholder="Contoh: 01, 15"
+                  className="w-full bg-[#14261f] border border-[#335a49] rounded-xl px-3 py-2 text-sm text-[#f3efdc] font-semibold focus:outline-none focus:border-[#f5d547]"
+                  maxLength={6}
                 />
               </div>
             </div>
@@ -655,11 +689,19 @@ export default function App() {
               </button>
 
               <button
-                onClick={() => setView('editor')}
+                onClick={() => {
+                  sounds.playClick();
+                  // Cek apakah admin sudah login dalam sesi ini
+                  if (sessionStorage.getItem('dk_admin_auth') === 'true') {
+                    setView('editor');
+                  } else {
+                    setShowAdminLogin(true);
+                  }
+                }}
                 className="px-5 py-3 rounded-2xl bg-[#1d3a2f] text-[#f3efdc] border-2 border-[#335a49] hover:bg-[#25493b] font-display font-bold text-sm sm:text-base transition-all flex items-center gap-2 shadow"
               >
-                <BookOpen className="w-4 h-4 text-[#6fd08c]" />
-                Bank Soal ({questions.length})
+                <Lock className="w-4 h-4 text-[#f5d547]" />
+                Bank Soal Guru ({questions.length})
               </button>
             </div>
 
@@ -682,6 +724,7 @@ export default function App() {
             myPlayer={myPlayer}
             defaultName={playerName}
             defaultClass={playerClass}
+            defaultAttendance={attendanceNumber}
             questions={questions}
             config={config}
             onJoinRoom={handleJoinRoom}
@@ -702,6 +745,7 @@ export default function App() {
             isSpectator={isSpectator}
             playerName={playerName}
             playerClass={playerClass}
+            attendanceNumber={attendanceNumber}
             ws={isOnlineMode ? wsRef.current : null}
             onlineRoom={isOnlineMode ? onlineRoom : null}
             initialOnlinePlayers={isOnlineMode ? roomPlayers : undefined}
@@ -762,6 +806,16 @@ export default function App() {
           }}
         />
       )}
+
+      {/* Admin Login Modal Dialog */}
+      <AdminLoginModal
+        isOpen={showAdminLogin}
+        onSuccess={() => {
+          setShowAdminLogin(false);
+          setView('editor');
+        }}
+        onClose={() => setShowAdminLogin(false)}
+      />
 
       {/* Footer */}
       <footer className="border-t border-[#335a49]/60 px-4 py-3 text-center text-xs text-[#a9bdb2]">
