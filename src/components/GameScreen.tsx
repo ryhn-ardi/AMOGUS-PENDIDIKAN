@@ -861,9 +861,9 @@ export const GameScreen: React.FC<Props> = ({
       if (type === 'player_moved' || type === 'player_update') {
         const p = g.players.find(x => x.id === payload.playerId);
         if (p && !p.isMe) {
-          p.x = payload.x;
-          p.y = payload.y;
-          p.dir = payload.dir;
+          if (typeof payload.x === 'number') (p as any).targetX = payload.x;
+          if (typeof payload.y === 'number') (p as any).targetY = payload.y;
+          if (typeof payload.dir === 'number') p.dir = payload.dir;
           if (typeof payload.angle === 'number') p.angle = payload.angle;
           if (typeof payload.workUntil === 'number') p.workUntil = payload.workUntil;
           if (typeof payload.shieldEndTime === 'number') p.shieldEndTime = payload.shieldEndTime;
@@ -965,8 +965,8 @@ export const GameScreen: React.FC<Props> = ({
             g.players.push(local);
           }
           if (local && !local.isMe) {
-            local.x = remote.x;
-            local.y = remote.y;
+            (local as any).targetX = remote.x;
+            (local as any).targetY = remote.y;
             local.dir = remote.dir;
             local.hp = remote.hp;
             local.dead = remote.dead;
@@ -1234,10 +1234,29 @@ export const GameScreen: React.FC<Props> = ({
           return true;
         });
 
-        // 4. Throttled Position Broadcast (20Hz)
+        // 4. Smooth Lerp for Remote Players in Online Mode
+        for (const p of g.players) {
+          if (!p.isMe && !p.isAI) {
+            const tx = (p as any).targetX;
+            const ty = (p as any).targetY;
+            if (typeof tx === 'number' && typeof ty === 'number') {
+              const dist = Math.hypot(tx - p.x, ty - p.y);
+              if (dist > 300) {
+                p.x = tx;
+                p.y = ty;
+              } else if (dist > 0.5) {
+                const lerpFactor = Math.min(1.0, dt * 14);
+                p.x += (tx - p.x) * lerpFactor;
+                p.y += (ty - p.y) * lerpFactor;
+              }
+            }
+          }
+        }
+
+        // 5. Throttled Position Broadcast (~11Hz)
         if (onlineRoom && g.myPlayer && !g.myPlayer.dead) {
           const nowMs = performance.now();
-          if (nowMs - g.lastNetSyncTime > 50) {
+          if (nowMs - g.lastNetSyncTime > 90) {
             g.lastNetSyncTime = nowMs;
             const payload = {
               x: Math.round(g.myPlayer.x),
@@ -1813,6 +1832,25 @@ export const GameScreen: React.FC<Props> = ({
     gameRef.current.keys[key] = false;
   };
 
+  const bindDpad = (dirKey: string) => {
+    const press = (e: React.SyntheticEvent) => {
+      if (e.cancelable) e.preventDefault();
+      gameRef.current.keys[dirKey] = true;
+    };
+    const release = (e: React.SyntheticEvent) => {
+      if (e.cancelable) e.preventDefault();
+      gameRef.current.keys[dirKey] = false;
+    };
+    return {
+      onMouseDown: press,
+      onMouseUp: release,
+      onMouseLeave: release,
+      onTouchStart: press,
+      onTouchEnd: release,
+      onTouchCancel: release
+    };
+  };
+
   const isImpostor = gameRef.current.myPlayer?.role === 'impostor';
 
   return (
@@ -2003,25 +2041,15 @@ export const GameScreen: React.FC<Props> = ({
           <div className="grid grid-cols-3 grid-rows-3 gap-1 w-36 h-36 select-none touch-none">
             <div></div>
             <button
-              onPointerDown={() => handleDpadDown('up')}
-              onPointerUp={() => handleDpadUp('up')}
-              onPointerLeave={() => handleDpadUp('up')}
-              onTouchStart={(e) => { e.preventDefault(); handleDpadDown('up'); }}
-              onTouchEnd={(e) => { e.preventDefault(); handleDpadUp('up'); }}
-              onTouchCancel={(e) => { e.preventDefault(); handleDpadUp('up'); }}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none"
+              {...bindDpad('up')}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
             >
               ▲
             </button>
             <div></div>
             <button
-              onPointerDown={() => handleDpadDown('left')}
-              onPointerUp={() => handleDpadUp('left')}
-              onPointerLeave={() => handleDpadUp('left')}
-              onTouchStart={(e) => { e.preventDefault(); handleDpadDown('left'); }}
-              onTouchEnd={(e) => { e.preventDefault(); handleDpadUp('left'); }}
-              onTouchCancel={(e) => { e.preventDefault(); handleDpadUp('left'); }}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none"
+              {...bindDpad('left')}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
             >
               ◀
             </button>
@@ -2029,25 +2057,15 @@ export const GameScreen: React.FC<Props> = ({
               <Gamepad2 className="w-5 h-5 text-[#335a49]" />
             </div>
             <button
-              onPointerDown={() => handleDpadDown('right')}
-              onPointerUp={() => handleDpadUp('right')}
-              onPointerLeave={() => handleDpadUp('right')}
-              onTouchStart={(e) => { e.preventDefault(); handleDpadDown('right'); }}
-              onTouchEnd={(e) => { e.preventDefault(); handleDpadUp('right'); }}
-              onTouchCancel={(e) => { e.preventDefault(); handleDpadUp('right'); }}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none"
+              {...bindDpad('right')}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
             >
               ▶
             </button>
             <div></div>
             <button
-              onPointerDown={() => handleDpadDown('down')}
-              onPointerUp={() => handleDpadUp('down')}
-              onPointerLeave={() => handleDpadUp('down')}
-              onTouchStart={(e) => { e.preventDefault(); handleDpadDown('down'); }}
-              onTouchEnd={(e) => { e.preventDefault(); handleDpadUp('down'); }}
-              onTouchCancel={(e) => { e.preventDefault(); handleDpadUp('down'); }}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none"
+              {...bindDpad('down')}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
             >
               ▼
             </button>

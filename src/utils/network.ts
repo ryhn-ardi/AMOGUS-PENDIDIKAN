@@ -78,7 +78,6 @@ export const api = {
         shieldEndTime: payload.shieldEndTime
       };
       await firebaseMultiplayer.updatePlayerState(cleanCode, clientId, updates);
-      await firebaseMultiplayer.sendEvent(cleanCode, 'player_moved', { ...updates, playerId: clientId });
     } else if (type === 'add_bot') {
       await firebaseMultiplayer.addBot(cleanCode, payload.config || ({} as any));
     } else if (type === 'clear_bots') {
