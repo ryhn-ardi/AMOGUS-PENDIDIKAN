@@ -67,6 +67,18 @@ export const api = {
     const cleanCode = (roomCode || '').trim().toUpperCase();
     if (type === 'start_game') {
       await firebaseMultiplayer.startGame(cleanCode, payload.questions || [], payload.config || ({} as any));
+    } else if (type === 'player_update' || type === 'player_moved') {
+      const clientId = getClientId();
+      const updates = {
+        x: payload.x,
+        y: payload.y,
+        dir: payload.dir,
+        angle: payload.angle,
+        workUntil: payload.workUntil,
+        shieldEndTime: payload.shieldEndTime
+      };
+      await firebaseMultiplayer.updatePlayerState(cleanCode, clientId, updates);
+      await firebaseMultiplayer.sendEvent(cleanCode, 'player_moved', { ...updates, playerId: clientId });
     } else if (type === 'add_bot') {
       await firebaseMultiplayer.addBot(cleanCode, payload.config || ({} as any));
     } else if (type === 'clear_bots') {

@@ -858,7 +858,7 @@ export const GameScreen: React.FC<Props> = ({
     const lastEventIdRef = { current: 0 };
 
     const processGameEvent = (type: string, payload: any) => {
-      if (type === 'player_moved') {
+      if (type === 'player_moved' || type === 'player_update') {
         const p = g.players.find(x => x.id === payload.playerId);
         if (p && !p.isMe) {
           p.x = payload.x;
@@ -955,7 +955,15 @@ export const GameScreen: React.FC<Props> = ({
       unsubPlayers = firebaseMultiplayer.subscribePlayers(onlineRoom.code, activeMyId, (remotePlayers) => {
         if (g.over) return;
         remotePlayers.forEach((remote: Player) => {
-          const local = g.players.find(p => p.id === remote.id);
+          let local = g.players.find(p => p.id === remote.id);
+          if (!local) {
+            local = {
+              ...remote,
+              isMe: remote.id === activeMyId,
+              isAI: false
+            };
+            g.players.push(local);
+          }
           if (local && !local.isMe) {
             local.x = remote.x;
             local.y = remote.y;
@@ -1998,7 +2006,10 @@ export const GameScreen: React.FC<Props> = ({
               onPointerDown={() => handleDpadDown('up')}
               onPointerUp={() => handleDpadUp('up')}
               onPointerLeave={() => handleDpadUp('up')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow"
+              onTouchStart={(e) => { e.preventDefault(); handleDpadDown('up'); }}
+              onTouchEnd={(e) => { e.preventDefault(); handleDpadUp('up'); }}
+              onTouchCancel={(e) => { e.preventDefault(); handleDpadUp('up'); }}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none"
             >
               ▲
             </button>
@@ -2007,7 +2018,10 @@ export const GameScreen: React.FC<Props> = ({
               onPointerDown={() => handleDpadDown('left')}
               onPointerUp={() => handleDpadUp('left')}
               onPointerLeave={() => handleDpadUp('left')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow"
+              onTouchStart={(e) => { e.preventDefault(); handleDpadDown('left'); }}
+              onTouchEnd={(e) => { e.preventDefault(); handleDpadUp('left'); }}
+              onTouchCancel={(e) => { e.preventDefault(); handleDpadUp('left'); }}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none"
             >
               ◀
             </button>
@@ -2018,7 +2032,10 @@ export const GameScreen: React.FC<Props> = ({
               onPointerDown={() => handleDpadDown('right')}
               onPointerUp={() => handleDpadUp('right')}
               onPointerLeave={() => handleDpadUp('right')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow"
+              onTouchStart={(e) => { e.preventDefault(); handleDpadDown('right'); }}
+              onTouchEnd={(e) => { e.preventDefault(); handleDpadUp('right'); }}
+              onTouchCancel={(e) => { e.preventDefault(); handleDpadUp('right'); }}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none"
             >
               ▶
             </button>
@@ -2027,7 +2044,10 @@ export const GameScreen: React.FC<Props> = ({
               onPointerDown={() => handleDpadDown('down')}
               onPointerUp={() => handleDpadUp('down')}
               onPointerLeave={() => handleDpadUp('down')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow"
+              onTouchStart={(e) => { e.preventDefault(); handleDpadDown('down'); }}
+              onTouchEnd={(e) => { e.preventDefault(); handleDpadUp('down'); }}
+              onTouchCancel={(e) => { e.preventDefault(); handleDpadUp('down'); }}
+              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none"
             >
               ▼
             </button>
