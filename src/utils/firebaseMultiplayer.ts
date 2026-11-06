@@ -37,6 +37,43 @@ const PLAYER_COLORS = [
   '#9b59b6', '#e67e22', '#1abc9c', '#e91e63'
 ];
 
+export const DEFAULT_GAME_CONFIG: GameConfig = {
+  impostorsCount: 1,
+  crewLives: 3,
+  shieldDuration: 3,
+  shieldCooldown: 12,
+  impostorShotCooldown: 4,
+  speedBoostPerTask: 12,
+  tasksToWin: 6
+};
+
+export function sanitizeConfig(cfg?: Partial<GameConfig> | null): GameConfig {
+  return {
+    impostorsCount: (cfg && typeof cfg.impostorsCount === 'number' && cfg.impostorsCount > 0) ? cfg.impostorsCount : DEFAULT_GAME_CONFIG.impostorsCount,
+    crewLives: (cfg && typeof cfg.crewLives === 'number' && cfg.crewLives > 0) ? cfg.crewLives : DEFAULT_GAME_CONFIG.crewLives,
+    shieldDuration: (cfg && typeof cfg.shieldDuration === 'number') ? cfg.shieldDuration : DEFAULT_GAME_CONFIG.shieldDuration,
+    shieldCooldown: (cfg && typeof cfg.shieldCooldown === 'number') ? cfg.shieldCooldown : DEFAULT_GAME_CONFIG.shieldCooldown,
+    impostorShotCooldown: (cfg && typeof cfg.impostorShotCooldown === 'number') ? cfg.impostorShotCooldown : DEFAULT_GAME_CONFIG.impostorShotCooldown,
+    speedBoostPerTask: (cfg && typeof cfg.speedBoostPerTask === 'number') ? cfg.speedBoostPerTask : DEFAULT_GAME_CONFIG.speedBoostPerTask,
+    tasksToWin: (cfg && typeof cfg.tasksToWin === 'number' && cfg.tasksToWin > 0) ? cfg.tasksToWin : DEFAULT_GAME_CONFIG.tasksToWin
+  };
+}
+
+export function sanitizeForFirestore<T>(obj: T): T {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) {
+    return obj.map(item => sanitizeForFirestore(item)) as any;
+  }
+  const cleanObj: any = {};
+  for (const [key, value] of Object.entries(obj as any)) {
+    if (value !== undefined) {
+      cleanObj[key] = sanitizeForFirestore(value);
+    }
+  }
+  return cleanObj;
+}
+
 export const firebaseMultiplayer = {
   /**
    * Check if Firebase is accessible
@@ -99,6 +136,8 @@ export const firebaseMultiplayer = {
       }
     }
 
+    const roomConfig = sanitizeConfig(params.config);
+
     const hostPlayer: Player = {
       id: clientId,
       name: params.name.trim() || 'Host',
@@ -109,8 +148,8 @@ export const firebaseMultiplayer = {
       x: 900,
       y: 750,
       dir: 1,
-      hp: params.config?.crewLives || 3,
-      maxHp: params.config?.crewLives || 3,
+      hp: roomConfig.crewLives,
+      maxHp: roomConfig.crewLives,
       dead: false,
       isMe: true,
       isAI: false,
@@ -137,15 +176,7 @@ export const firebaseMultiplayer = {
       hostId: clientId,
       hostName: params.name.trim() || 'Host',
       status: 'lobby',
-      config: params.config || {
-        impostorsCount: 1,
-        crewLives: 3,
-        shieldDuration: 3,
-        shieldCooldown: 12,
-        impostorShotCooldown: 4,
-        speedBoostPerTask: 12,
-        tasksToWin: 6
-      },
+      config: roomConfig,
       questions: params.questions || [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -153,9 +184,9 @@ export const firebaseMultiplayer = {
     };
 
     try {
-      await setDoc(roomRef, roomData);
+      await setDoc(roomRef, sanitizeForFirestore(roomData));
       const playerDocRef = doc(db, 'rooms', finalCode, 'players', clientId);
-      await setDoc(playerDocRef, hostPlayer);
+      await setDoc(playerDocRef, sanitizeForFirestore(hostPlayer));
 
       return {
         room: roomData,
@@ -191,6 +222,8 @@ export const firebaseMultiplayer = {
     }
 
     const roomData = roomSnap.data() as OnlineRoomData;
+    const roomConfig = sanitizeConfig(roomData.config);
+
     if (roomData.status === 'playing' && !params.isSpectator) {
       throw new Error(`Pertandingan di room "${cleanCode}" sedang berlangsung. Anda bisa bergabung sebagai spektator.`);
     }
@@ -215,8 +248,8 @@ export const firebaseMultiplayer = {
         x: 880 + (existingPlayers.length * 28) % 180,
         y: 740 + (existingPlayers.length * 20) % 120,
         dir: 1,
-        hp: roomData.config?.crewLives || 3,
-        maxHp: roomData.config?.crewLives || 3,
+        hp: roomConfig.crewLives,
+        maxHp: roomConfig.crewLives,
         dead: false,
         isMe: true,
         isAI: false,
@@ -239,7 +272,7 @@ export const firebaseMultiplayer = {
       };
 
       try {
-        await setDoc(doc(db, 'rooms', cleanCode, 'players', clientId), myPlayer);
+        await setDoc(doc(db, 'rooms', cleanCode, 'players', clientId), sanitizeForFirestore(myPlayer));
       } catch (err: any) {
         handleFirestoreError(err, OperationType.WRITE, `rooms/${cleanCode}/players/${clientId}`);
         throw new Error('Gagal mendaftarkan pemain ke dalam room.');
@@ -331,10 +364,15 @@ export const firebaseMultiplayer = {
   /**
    * Update own player state in Firestore
    */
+  /**
+   * Update own player state in Firestore
+   */
   async updatePlayerState(roomCode: string, playerId: string, updates: Partial<Player>) {
     try {
+      const cleanUpdates = sanitizeForFirestore(updates);
+      if (Object.keys(cleanUpdates).length === 0) return;
       const playerRef = doc(db, 'rooms', roomCode, 'players', playerId);
-      await updateDoc(playerRef, updates as any);
+      await updateDoc(playerRef, cleanUpdates as any);
     } catch (e) {
       // Handled silently for smooth continuous position updates
     }
@@ -347,13 +385,13 @@ export const firebaseMultiplayer = {
     try {
       const eventsCol = collection(db, 'rooms', roomCode, 'events');
       const eventId = 'ev_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
-      await setDoc(doc(eventsCol, eventId), {
+      await setDoc(doc(eventsCol, eventId), sanitizeForFirestore({
         id: eventId,
         type: eventType,
         senderId: getClientId(),
         payload,
         createdAt: Date.now()
-      });
+      }));
     } catch (e) {
       handleFirestoreError(e, OperationType.CREATE, `rooms/${roomCode}/events`);
     }
@@ -362,9 +400,13 @@ export const firebaseMultiplayer = {
   /**
    * Host action: Start game, assign roles, and distribute randomized questions
    */
-  async startGame(roomCode: string, questionsPool: Question[], config: GameConfig) {
+  async startGame(roomCode: string, questionsPool?: Question[], configInput?: GameConfig) {
     const cleanCode = roomCode.trim().toUpperCase();
     const roomRef = doc(db, 'rooms', cleanCode);
+    const roomSnap = await getDoc(roomRef);
+    const existingRoom = roomSnap.exists() ? (roomSnap.data() as OnlineRoomData) : null;
+    const config = sanitizeConfig(configInput && Object.keys(configInput).length > 0 ? configInput : existingRoom?.config);
+
     const playersCol = collection(db, 'rooms', cleanCode, 'players');
     const playersSnap = await getDocs(playersCol);
     
@@ -404,7 +446,7 @@ export const firebaseMultiplayer = {
         completedBitmask: 0,
         lockedStations: {}
       };
-      await setDoc(doc(db, 'rooms', cleanCode, 'players', bot1Id), bot1);
+      await setDoc(doc(db, 'rooms', cleanCode, 'players', bot1Id), sanitizeForFirestore(bot1));
       players.push(bot1);
     }
 
@@ -432,7 +474,7 @@ export const firebaseMultiplayer = {
         completedBitmask: 0,
         lockedStations: {}
       };
-      await updateDoc(doc(db, 'rooms', cleanCode, 'players', p.id), updatedData as any);
+      await updateDoc(doc(db, 'rooms', cleanCode, 'players', p.id), sanitizeForFirestore(updatedData) as any);
     }
 
     // Generate randomized stations distributed across rooms
@@ -440,19 +482,20 @@ export const firebaseMultiplayer = {
     const stations: TaskStation[] = generateRandomizedStations(stationCount);
 
     // Select randomized questions
-    let finalQuestions = questionsPool;
-    if (questionsPool.length > config.tasksToWin) {
-      finalQuestions = [...questionsPool].sort(() => Math.random() - 0.5).slice(0, Math.max(config.tasksToWin, 6));
+    let finalQuestions = questionsPool && questionsPool.length > 0 ? questionsPool : (existingRoom?.questions || []);
+    if (finalQuestions.length > config.tasksToWin) {
+      finalQuestions = [...finalQuestions].sort(() => Math.random() - 0.5).slice(0, Math.max(config.tasksToWin, 6));
     }
 
     // Update room status
-    await updateDoc(roomRef, {
+    await updateDoc(roomRef, sanitizeForFirestore({
       status: 'playing',
       stations,
       questions: finalQuestions,
+      config,
       startedAt: Date.now(),
       updatedAt: Date.now()
-    } as any);
+    }) as any);
 
     // Send game_started event
     await this.sendEvent(cleanCode, 'game_started', {
@@ -463,8 +506,13 @@ export const firebaseMultiplayer = {
   /**
    * Add bot player to lobby
    */
-  async addBot(roomCode: string, config: GameConfig) {
+  async addBot(roomCode: string, configInput?: GameConfig) {
     const cleanCode = roomCode.trim().toUpperCase();
+    const roomRef = doc(db, 'rooms', cleanCode);
+    const roomSnap = await getDoc(roomRef);
+    const existingRoom = roomSnap.exists() ? (roomSnap.data() as OnlineRoomData) : null;
+    const config = sanitizeConfig(configInput && Object.keys(configInput).length > 0 ? configInput : existingRoom?.config);
+
     const botNum = Math.floor(Math.random() * 900 + 100);
     const botId = `bot_${botNum}`;
     const botNames = ['Budi', 'Rani', 'Siti', 'Dimas', 'Adit', 'Maya', 'Fajar', 'Dewi', 'Reza'];
@@ -500,7 +548,7 @@ export const firebaseMultiplayer = {
       lockedStations: {}
     };
 
-    await setDoc(doc(db, 'rooms', cleanCode, 'players', botId), botPlayer);
+    await setDoc(doc(db, 'rooms', cleanCode, 'players', botId), sanitizeForFirestore(botPlayer));
   },
 
   /**
