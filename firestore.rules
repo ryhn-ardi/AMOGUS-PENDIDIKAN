@@ -3,10 +3,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 64;
-    }
-
     // Default deny for unhandled paths
     match /{document=**} {
       allow read, write: if false;
@@ -17,21 +13,18 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Rooms collection: open read, write, and update for multiplayer coordination
+    // Rooms collection: allow open read and write for room creation and active room list
     match /rooms/{roomCode} {
-      allow read: if isValidId(roomCode);
-      allow create, update, delete: if isValidId(roomCode);
+      allow read, write: if true;
 
-      // Players subcollection: allows all participants to join, update position, hp, tasks, or leave
+      // Players subcollection: allow participants to join, update state, list players, or leave
       match /players/{playerId} {
-        allow read: if isValidId(roomCode) && isValidId(playerId);
-        allow create, update, delete: if isValidId(roomCode) && isValidId(playerId);
+        allow read, write: if true;
       }
 
-      // Events subcollection: live chat, bullets, eliminations, game start announcements
+      // Events subcollection: allow real-time events, bullets, chat, and game announcements
       match /events/{eventId} {
-        allow read: if isValidId(roomCode) && isValidId(eventId);
-        allow create, update, delete: if isValidId(roomCode) && isValidId(eventId);
+        allow read, write: if true;
       }
     }
   }
