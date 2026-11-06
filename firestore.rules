@@ -1,0 +1,47 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Rooms collection: public read, write for creating and updating rooms
+    match /rooms/{roomCode} {
+      allow read: if isValidId(roomCode);
+      allow create, update: if isValidId(roomCode)
+        && request.resource.data.code is string
+        && request.resource.data.code.size() <= 16
+        && request.resource.data.hostId is string
+        && request.resource.data.hostName is string
+        && request.resource.data.hostName.size() <= 32
+        && (request.resource.data.status in ['lobby', 'playing', 'ended']);
+      allow delete: if isValidId(roomCode);
+
+      // Players subcollection: allows participants to read and update their own state
+      match /players/{playerId} {
+        allow read: if isValidId(roomCode) && isValidId(playerId);
+        allow create, update: if isValidId(roomCode) && isValidId(playerId)
+          && request.resource.data.id is string
+          && request.resource.data.name is string
+          && request.resource.data.name.size() <= 24;
+        allow delete: if isValidId(roomCode) && isValidId(playerId);
+      }
+
+      // Events subcollection (chats, bullet triggers, announcements)
+      match /events/{eventId} {
+        allow read: if isValidId(roomCode) && isValidId(eventId);
+        allow create: if isValidId(roomCode) && isValidId(eventId)
+          && request.resource.data.type is string
+          && request.resource.data.type.size() <= 32;
+        allow update, delete: if false;
+      }
+    }
+  }
+}

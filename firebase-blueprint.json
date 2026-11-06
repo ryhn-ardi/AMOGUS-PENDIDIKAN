@@ -1,0 +1,222 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "A multiplayer game room in Detektif Kelas",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Unique uppercase room code (e.g., KELAS7A)",
+          "maxLength": 16,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "hostId": {
+          "type": "string",
+          "description": "Client ID of the room host",
+          "maxLength": 64
+        },
+        "hostName": {
+          "type": "string",
+          "description": "Display name of the host",
+          "maxLength": 32
+        },
+        "status": {
+          "type": "string",
+          "description": "Game status: lobby, playing, or ended",
+          "enum": ["lobby", "playing", "ended"]
+        },
+        "config": {
+          "type": "object",
+          "description": "Game parameters (impostors, lives, tasks)"
+        },
+        "questions": {
+          "type": "array",
+          "description": "List of questions chosen for this room"
+        },
+        "stations": {
+          "type": "array",
+          "description": "Positions and properties of the task stations"
+        },
+        "winnerTeam": {
+          "type": "string",
+          "description": "Winning team (crew or impostor) when ended",
+          "enum": ["crew", "impostor", ""]
+        },
+        "winnerTitle": {
+          "type": "string",
+          "description": "Title announcement of winner",
+          "maxLength": 128
+        },
+        "winnerReason": {
+          "type": "string",
+          "description": "Reason for team victory",
+          "maxLength": 256
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Room creation epoch timestamp"
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Last update epoch timestamp"
+        }
+      },
+      "required": ["code", "hostId", "hostName", "status", "createdAt"]
+    },
+    "Player": {
+      "title": "Player",
+      "description": "A player or spectator participating in a room",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique client ID of the player",
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "description": "Student nickname",
+          "maxLength": 24
+        },
+        "playerClass": {
+          "type": "string",
+          "description": "Student class (e.g. 7A, 8B)",
+          "maxLength": 24
+        },
+        "role": {
+          "type": "string",
+          "description": "Role in the round",
+          "enum": ["crew", "impostor"]
+        },
+        "color": {
+          "type": "string",
+          "description": "Color hex string",
+          "maxLength": 16
+        },
+        "x": {
+          "type": "number",
+          "description": "X coordinate in game arena"
+        },
+        "y": {
+          "type": "number",
+          "description": "Y coordinate in game arena"
+        },
+        "dir": {
+          "type": "number",
+          "description": "Facing direction (1 = right, -1 = left)"
+        },
+        "hp": {
+          "type": "number",
+          "description": "Current health points"
+        },
+        "maxHp": {
+          "type": "number",
+          "description": "Maximum health points"
+        },
+        "dead": {
+          "type": "boolean",
+          "description": "Whether player is eliminated"
+        },
+        "isHost": {
+          "type": "boolean",
+          "description": "Whether player is room host"
+        },
+        "isSpectator": {
+          "type": "boolean",
+          "description": "Whether user is observing without playing"
+        },
+        "isAI": {
+          "type": "boolean",
+          "description": "Whether player is an AI bot"
+        },
+        "doneTasks": {
+          "type": "number",
+          "description": "Number of completed quiz tasks"
+        },
+        "totalAttempts": {
+          "type": "number",
+          "description": "Total quiz question attempts"
+        },
+        "correctAnswers": {
+          "type": "number",
+          "description": "Total correctly answered tasks"
+        },
+        "wrongAnswers": {
+          "type": "number",
+          "description": "Total wrong answers"
+        },
+        "taskDurations": {
+          "type": "array",
+          "description": "Time taken in seconds per completed task"
+        },
+        "eliminatedAt": {
+          "type": "number",
+          "description": "Timestamp or game time when eliminated"
+        },
+        "survivedUntilEnd": {
+          "type": "boolean",
+          "description": "Whether player survived till end"
+        },
+        "shieldEndTime": {
+          "type": "number",
+          "description": "Timestamp when active shield expires"
+        },
+        "invulnerableUntil": {
+          "type": "number",
+          "description": "Timestamp when respawn invulnerability expires"
+        },
+        "lastSeen": {
+          "type": "number",
+          "description": "Heartbeat timestamp in milliseconds"
+        }
+      },
+      "required": ["id", "name", "role", "color", "x", "y", "hp", "dead"]
+    },
+    "GameEvent": {
+      "title": "GameEvent",
+      "description": "Transient or broadcast event in the room (chat, bullet, sound, action)",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique event id",
+          "maxLength": 64
+        },
+        "type": {
+          "type": "string",
+          "description": "Type of event (chat, bullet, kill, task_complete)",
+          "maxLength": 32
+        },
+        "senderId": {
+          "type": "string",
+          "description": "ID of sender",
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "object",
+          "description": "Event data payload"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Timestamp in milliseconds"
+        }
+      },
+      "required": ["id", "type", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomCode}": {
+      "schema": { "$ref": "#/entities/Room" },
+      "description": "Main document for each game room"
+    },
+    "/rooms/{roomCode}/players/{playerId}": {
+      "schema": { "$ref": "#/entities/Player" },
+      "description": "Real-time state for each player in room"
+    },
+    "/rooms/{roomCode}/events/{eventId}": {
+      "schema": { "$ref": "#/entities/GameEvent" },
+      "description": "Broadcast actions (bullet shots, chat messages, hits)"
+    }
+  }
+}

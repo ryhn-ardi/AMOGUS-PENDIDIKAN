@@ -7,6 +7,7 @@ import { LeaderboardModal } from './components/LeaderboardModal';
 import { OnlineLobby } from './components/OnlineLobby';
 import { getMatchHistory } from './utils/leaderboard';
 import { api, getClientId } from './utils/network';
+import { firebaseMultiplayer } from './utils/firebaseMultiplayer';
 import { 
   Play, 
   Users, 
@@ -75,6 +76,23 @@ export default function App() {
     return DEFAULT_QUESTIONS;
   });
 
+  const showOnlineError = useCallback((err: any) => {
+    let msg = 'Gagal memproses permintaan online.';
+    if (typeof err === 'string') {
+      msg = err;
+    } else if (err?.message && typeof err.message === 'string') {
+      if (err.message.includes('[object Object]') || err.message.includes('Unexpected token')) {
+        msg = 'Koneksi ke room tidak valid atau telah berakhir. Silakan pilih room aktif di bawah atau buat room baru.';
+      } else {
+        msg = err.message;
+      }
+    } else if (err?.error && typeof err.error === 'string') {
+      msg = err.error;
+    }
+    setOnlineError(msg);
+    setTimeout(() => setOnlineError(''), 5000);
+  }, []);
+
   // Check Server Health (Ensures status shows "Server Online" reliably)
   useEffect(() => {
     let isMounted = true;
@@ -87,13 +105,13 @@ export default function App() {
         setServerOnline(true);
       } else {
         consecutiveFailures++;
-        if (consecutiveFailures >= 5) {
+        if (consecutiveFailures >= 8) {
           setServerOnline(false);
         }
       }
     };
     check();
-    const interval = setInterval(check, 6000);
+    const interval = setInterval(check, 7000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -119,7 +137,6 @@ export default function App() {
       };
 
       ws.onclose = () => {
-        // Fallback polling keeps the app fully functional without spamming retries
         setTimeout(() => {
           if (wsRef.current === ws) {
             connectWebSocket();
@@ -165,8 +182,7 @@ export default function App() {
             setShowLeaderboard(false);
             setView('online_lobby');
           } else if (msg.type === 'error') {
-            setOnlineError(msg.message || 'Terjadi kesalahan.');
-            setTimeout(() => setOnlineError(''), 4000);
+            showOnlineError(msg.message || 'Terjadi kesalahan di server.');
           }
         } catch (e) {
           console.error('Error in ws message', e);
@@ -175,12 +191,20 @@ export default function App() {
     } catch {
       // Ignored: HTTP sync active
     }
-  }, []);
+  }, [showOnlineError]);
 
   useEffect(() => {
     connectWebSocket();
 
     try {
+      // Clean any stale mock room keys from localStorage
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('dk_active_room_')) {
+          localStorage.removeItem(key);
+        }
+      }
+
       const savedConfig = localStorage.getItem('dk_cf_v2');
       if (savedConfig) setConfig(prev => ({ ...prev, ...JSON.parse(savedConfig) }));
       const savedName = localStorage.getItem('dk_player_name');
@@ -194,40 +218,66 @@ export default function App() {
     };
   }, [connectWebSocket]);
 
-  // Periodic Lobby Polling Synchronization
+  // Real-time Firebase Synchronization for Lobby and Room
   useEffect(() => {
-    if (!onlineRoom || view !== 'online_lobby') return;
+    if (!onlineRoom) return;
 
-    const interval = setInterval(async () => {
-      try {
-        const data = await api.syncRoom(onlineRoom.code, lastEventIdRef.current);
-        if (data.lastEventId) lastEventIdRef.current = data.lastEventId;
+    // 1. Subscribe to Room document (status changes, stations, etc.)
+    const unsubRoom = firebaseMultiplayer.subscribeRoom(onlineRoom.code, (updatedRoom) => {
+      if (!updatedRoom) {
+        setOnlineRoom(null);
+        setView('menu');
+        return;
+      }
+      setOnlineRoom(updatedRoom);
 
-        if (Array.isArray(data.players)) {
-          setRoomPlayers(data.players);
-          const currentMe = data.players.find(p => p.id === myPlayer?.id);
-          if (currentMe) setMyPlayer(currentMe);
+      if (updatedRoom.status === 'playing' && view !== 'game') {
+        if ((updatedRoom as any).stations) {
+          setInitialOnlineStations((updatedRoom as any).stations);
         }
+        setIsOnlineMode(true);
+        setView('game');
+      } else if (updatedRoom.status === 'lobby' && view === 'game') {
+        setView('online_lobby');
+      }
+    });
 
-        if (data.status === 'playing') {
-          setOnlineRoom(data.room);
-          setInitialOnlineStations(data.stations || []);
-          setIsOnlineMode(true);
-          setView('game');
-        }
+    // 2. Subscribe to Players in the Room (live joins, leaves, role updates)
+    const currentClientId = getClientId();
+    const unsubPlayers = firebaseMultiplayer.subscribePlayers(onlineRoom.code, currentClientId, (players) => {
+      setRoomPlayers(players);
+      const me = players.find(p => p.id === currentClientId);
+      if (me) setMyPlayer(me);
+    });
 
-        if (Array.isArray(data.events)) {
-          data.events.forEach(ev => {
-            if (ev.type === 'chat_broadcast') {
-              setChatMessages(prev => [...prev.slice(-30), ev.payload]);
-            }
-          });
-        }
-      } catch {}
-    }, 700);
+    // 3. Subscribe to Real-time Events (chats, bullet triggers, announcements)
+    const unsubEvents = firebaseMultiplayer.subscribeEvents(onlineRoom.code, (event) => {
+      if (event.type === 'chat_message') {
+        setChatMessages(prev => [
+          ...prev.slice(-30),
+          {
+            senderName: event.payload.name || 'Siswa',
+            senderClass: event.payload.playerClass || '',
+            senderColor: event.payload.color || '#f5d547',
+            text: event.payload.text || '',
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        ]);
+      } else if (event.type === 'game_started') {
+        setIsOnlineMode(true);
+        setView('game');
+      } else if (event.type === 'returned_to_lobby') {
+        setShowLeaderboard(false);
+        setView('online_lobby');
+      }
+    });
 
-    return () => clearInterval(interval);
-  }, [onlineRoom, view, myPlayer?.id]);
+    return () => {
+      unsubRoom();
+      unsubPlayers();
+      unsubEvents();
+    };
+  }, [onlineRoom?.code, view]);
 
   const handleSaveQuestions = (newQuestions: Question[]) => {
     setQuestions(newQuestions);
@@ -279,8 +329,7 @@ export default function App() {
       setOnlineError('');
       setView('online_lobby');
     } catch (err: any) {
-      setOnlineError(err.message || 'Gagal membuat room.');
-      setTimeout(() => setOnlineError(''), 4000);
+      showOnlineError(err);
     }
   };
 
@@ -301,8 +350,7 @@ export default function App() {
       setOnlineError('');
       setView('online_lobby');
     } catch (err: any) {
-      setOnlineError(err.message || 'Gagal bergabung ke room.');
-      setTimeout(() => setOnlineError(''), 4000);
+      showOnlineError(err);
     }
   };
 
@@ -315,8 +363,7 @@ export default function App() {
       }
       await api.sendAction(onlineRoom.code, 'start_game', {});
     } catch (err: any) {
-      setOnlineError(err.message || 'Gagal memulai pertandingan.');
-      setTimeout(() => setOnlineError(''), 3000);
+      showOnlineError(err);
     }
   };
 
@@ -511,8 +558,14 @@ export default function App() {
 
       {/* Pesan Kesalahan Online (jika ada) */}
       {onlineError && (
-        <div className="bg-[#ef6b5b] text-[#2b0d08] px-4 py-2 text-center text-xs sm:text-sm font-bold shadow animate-in fade-in">
-          {onlineError}
+        <div className="bg-[#ef6b5b] text-[#2b0d08] px-4 py-2.5 text-center text-xs sm:text-sm font-bold shadow animate-in fade-in flex items-center justify-center gap-2">
+          <span>{typeof onlineError === 'string' ? onlineError : 'Terjadi kendala koneksi room.'}</span>
+          <button 
+            onClick={() => setOnlineError('')}
+            className="text-xs underline ml-2 opacity-80 hover:opacity-100 cursor-pointer"
+          >
+            Tutup
+          </button>
         </div>
       )}
 

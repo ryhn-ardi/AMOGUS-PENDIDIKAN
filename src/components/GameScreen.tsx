@@ -4,6 +4,7 @@ import { sounds } from '../utils/sound';
 import { calculateLeaderboard, saveMatchResult } from '../utils/leaderboard';
 import { Shield, Skull, Eye, Volume2, VolumeX, LogOut, CheckCircle, Zap } from 'lucide-react';
 import { api } from '../utils/network';
+import { firebaseMultiplayer } from '../utils/firebaseMultiplayer';
 
 interface Props {
   questions: Question[];
@@ -723,43 +724,36 @@ export const GameScreen: React.FC<Props> = ({
       };
     }
 
-    // HTTP Background Polling Fallback (runs every 100ms when online)
-    let syncInterval: any = null;
+    // Direct Firebase Real-time Synchronization for Players and Events
+    let unsubPlayers: (() => void) | null = null;
+    let unsubEvents: (() => void) | null = null;
+
     if (onlineRoom) {
-      syncInterval = setInterval(async () => {
+      const activeMyId = myPlayerId || '';
+      unsubPlayers = firebaseMultiplayer.subscribePlayers(onlineRoom.code, activeMyId, (remotePlayers) => {
         if (g.over) return;
-        try {
-          const data = await api.syncRoom(onlineRoom.code, lastEventIdRef.current);
-          if (data.lastEventId) lastEventIdRef.current = data.lastEventId;
-
-          if (Array.isArray(data.players)) {
-            data.players.forEach(remote => {
-              const local = g.players.find(p => p.id === remote.id);
-              if (local && !local.isMe) {
-                local.x = remote.x;
-                local.y = remote.y;
-                local.dir = remote.dir;
-                local.hp = remote.hp;
-                local.dead = remote.dead;
-                local.doneTasks = remote.doneTasks;
-                local.correctAnswers = remote.correctAnswers;
-                local.shieldEndTime = remote.shieldEndTime;
-                local.workUntil = remote.workUntil;
-              }
-            });
+        remotePlayers.forEach((remote: Player) => {
+          const local = g.players.find(p => p.id === remote.id);
+          if (local && !local.isMe) {
+            local.x = remote.x;
+            local.y = remote.y;
+            local.dir = remote.dir;
+            local.hp = remote.hp;
+            local.dead = remote.dead;
+            local.doneTasks = remote.doneTasks;
+            local.correctAnswers = remote.correctAnswers;
+            local.shieldEndTime = remote.shieldEndTime;
+            local.workUntil = remote.workUntil;
           }
+        });
+      });
 
-          if (Array.isArray(data.events)) {
-            data.events.forEach(ev => {
-              processGameEvent(ev.type, ev.payload);
-            });
-          }
-
-          if (data.summary && !g.over) {
-            processGameEvent('game_over', { summary: data.summary });
-          }
-        } catch {}
-      }, 100);
+      unsubEvents = firebaseMultiplayer.subscribeEvents(onlineRoom.code, (event: any) => {
+        if (g.over) return;
+        if (event && event.type && event.payload) {
+          processGameEvent(event.type, event.payload);
+        }
+      });
     }
 
     // Keyboard handlers
@@ -1025,7 +1019,8 @@ export const GameScreen: React.FC<Props> = ({
 
     return () => {
       cancelAnimationFrame(animId);
-      if (syncInterval) clearInterval(syncInterval);
+      if (unsubPlayers) unsubPlayers();
+      if (unsubEvents) unsubEvents();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       if (bannerTimeoutRef.current) clearTimeout(bannerTimeoutRef.current);

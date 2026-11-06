@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { sounds } from '../utils/sound';
 import { api } from '../utils/network';
+import { firebaseMultiplayer } from '../utils/firebaseMultiplayer';
 
 interface Props {
   ws: WebSocket | null;
@@ -65,7 +66,7 @@ export const OnlineLobby: React.FC<Props> = ({
   const [copiedCode, setCopiedCode] = useState(false);
   const [chatInput, setChatInput] = useState('');
 
-  // Active public rooms from server
+  // Active public rooms from Firebase
   const [availableRooms, setAvailableRooms] = useState<Array<{
     code: string;
     hostName: string;
@@ -77,32 +78,16 @@ export const OnlineLobby: React.FC<Props> = ({
   // Host configuration state
   const [hostConfig, setHostConfig] = useState<GameConfig>(config);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
-
-  const fetchRooms = async () => {
-    setLoadingRooms(true);
-    try {
-      const res = await fetch('/api/rooms', {
-        headers: { 'Accept': 'application/json' },
-        cache: 'no-store'
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.rooms)) {
-          setAvailableRooms(data.rooms);
-        }
-      }
-    } catch (e) {
-      console.error('Error fetching rooms', e);
-    } finally {
-      setLoadingRooms(false);
-    }
-  };
+  const [isJoiningRoom, setIsJoiningRoom] = useState<string | null>(null);
 
   useEffect(() => {
     if (!onlineRoom) {
-      fetchRooms();
-      const interval = setInterval(fetchRooms, 5000);
-      return () => clearInterval(interval);
+      setLoadingRooms(true);
+      const unsubscribe = firebaseMultiplayer.subscribeActiveRooms((rooms) => {
+        setAvailableRooms(rooms);
+        setLoadingRooms(false);
+      });
+      return () => unsubscribe();
     }
   }, [onlineRoom]);
 
@@ -129,16 +114,34 @@ export const OnlineLobby: React.FC<Props> = ({
     setTimeout(() => setIsCreatingRoom(false), 3000);
   };
 
+  const handleJoinClick = (targetCode: string, isPlaying: boolean) => {
+    const finalCode = (targetCode || '').trim().toUpperCase();
+    if (!finalCode) return;
+    const finalName = (nickname || defaultName || 'Siswa').trim() || 'Siswa';
+    const finalClass = (playerClass || defaultClass || 'Umum').trim() || 'Umum';
+    const finalSpectator = isPlaying ? true : isSpectator;
+    sounds.playClick();
+    setIsJoiningRoom(finalCode);
+    setRoomCodeInput(finalCode);
+    onJoinRoom(finalCode, finalName, finalClass, finalSpectator);
+    setTimeout(() => setIsJoiningRoom(null), 3000);
+  };
+
   const handleJoinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!nickname.trim() || !roomCodeInput.trim()) return;
+    const finalCode = roomCodeInput.trim().toUpperCase();
+    if (!finalCode) return;
+    const finalName = (nickname || defaultName || 'Siswa').trim() || 'Siswa';
+    const finalClass = (playerClass || defaultClass || 'Umum').trim() || 'Umum';
     sounds.playClick();
+    setIsJoiningRoom(finalCode);
     onJoinRoom(
-      roomCodeInput.trim().toUpperCase(),
-      nickname.trim(),
-      playerClass.trim() || 'Umum',
+      finalCode,
+      finalName,
+      finalClass,
       isSpectator
     );
+    setTimeout(() => setIsJoiningRoom(null), 3000);
   };
 
   const handleChatSubmit = (e: React.FormEvent) => {
@@ -328,13 +331,9 @@ export const OnlineLobby: React.FC<Props> = ({
                 <div className="flex items-center justify-between">
                   <h4 className="font-display font-bold text-sm text-[#f3efdc] flex items-center gap-2">
                     <span>Room Aktif di Sekolah</span>
-                    <button
-                      onClick={fetchRooms}
-                      className="p-1 rounded-lg hover:bg-[#1d3a2f] text-[#a9bdb2] hover:text-[#f3efdc]"
-                      title="Segarkan"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${loadingRooms ? 'animate-spin' : ''}`} />
-                    </button>
+                    <span className="p-1 text-[#6fd08c]" title="Tersinkronisasi Realtime Firebase">
+                      <Sparkles className="w-3.5 h-3.5" />
+                    </span>
                   </h4>
                   <span className="text-xs text-[#a9bdb2]">
                     {availableRooms.length} room tersedia
@@ -367,15 +366,23 @@ export const OnlineLobby: React.FC<Props> = ({
                         </div>
 
                         <button
-                          onClick={() => {
-                            setRoomCodeInput(r.code);
-                            if (nickname.trim()) {
-                              onJoinRoom(r.code, nickname.trim(), playerClass.trim() || 'Umum', isSpectator);
-                            }
-                          }}
-                          className="px-3.5 py-1.5 rounded-lg bg-[#14261f] border border-[#335a49] text-xs font-bold text-[#f5d547] hover:bg-[#f5d547] hover:text-[#14261f] transition-colors"
+                          onClick={() => handleJoinClick(r.code, r.status === 'playing')}
+                          disabled={isJoiningRoom === r.code}
+                          className="px-3.5 py-1.5 rounded-lg bg-[#14261f] border border-[#335a49] text-xs font-bold text-[#f5d547] hover:bg-[#f5d547] hover:text-[#14261f] transition-colors flex items-center gap-1.5 disabled:opacity-50"
                         >
-                          Masuk
+                          {isJoiningRoom === r.code ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>Masuk...</span>
+                            </>
+                          ) : r.status === 'playing' ? (
+                            <>
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Tonton</span>
+                            </>
+                          ) : (
+                            <span>Masuk</span>
+                          )}
                         </button>
                       </div>
                     ))}
