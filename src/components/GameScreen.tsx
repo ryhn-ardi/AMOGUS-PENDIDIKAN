@@ -246,78 +246,76 @@ interface JoystickControlProps {
 }
 
 const JoystickControl: React.FC<JoystickControlProps> = ({ onMove }) => {
-  const [touchState, setTouchState] = useState<{
+  const [touchPos, setTouchPos] = useState<{
     active: boolean;
-    startX: number;
-    startY: number;
     currX: number;
     currY: number;
-  }>({ active: false, startX: 0, startY: 0, currX: 0, currY: 0 });
+  }>({ active: false, currX: 72, currY: 72 });
 
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const touch = e.touches[0];
+  const processTouch = useCallback((clientX: number, clientY: number) => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
 
-    const startX = touch.clientX - rect.left;
-    const startY = touch.clientY - rect.top;
-    setTouchState({
-      active: true,
-      startX,
-      startY,
-      currX: startX,
-      currY: startY
-    });
-    onMove({ x: 0, y: 0 });
-  };
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+    const touchX = clientX - rect.left;
+    const touchY = clientY - rect.top;
 
-  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    if (!touchState.active) return;
-    const touch = e.touches[0];
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    const touchX = touch.clientX - rect.left;
-    const touchY = touch.clientY - rect.top;
-
-    const dx = touchX - touchState.startX;
-    const dy = touchY - touchState.startY;
+    const dx = touchX - centerX;
+    const dy = touchY - centerY;
     const dist = Math.hypot(dx, dy);
     const maxR = 48;
 
     const clampedDist = Math.min(dist, maxR);
     const angle = Math.atan2(dy, dx);
 
-    const normX = clampedDist > 4 ? Math.cos(angle) * (clampedDist / maxR) : 0;
-    const normY = clampedDist > 4 ? Math.sin(angle) * (clampedDist / maxR) : 0;
+    const normX = clampedDist > 2 ? Math.cos(angle) * (clampedDist / maxR) : 0;
+    const normY = clampedDist > 2 ? Math.sin(angle) * (clampedDist / maxR) : 0;
 
-    setTouchState(prev => ({
-      ...prev,
-      currX: prev.startX + Math.cos(angle) * clampedDist,
-      currY: prev.startY + Math.sin(angle) * clampedDist
-    }));
+    setTouchPos({
+      active: clampedDist > 2,
+      currX: centerX + Math.cos(angle) * clampedDist,
+      currY: centerY + Math.sin(angle) * clampedDist
+    });
 
     onMove({ x: normX, y: normY });
+  }, [onMove]);
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.cancelable) e.preventDefault();
+    if (e.touches.length > 0) {
+      const touch = e.touches[0];
+      processTouch(touch.clientX, touch.clientY);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.cancelable) e.preventDefault();
+    if (e.touches.length > 0) {
+      const touch = e.touches[0];
+      processTouch(touch.clientX, touch.clientY);
+    }
   };
 
   const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setTouchState({ active: false, startX: 0, startY: 0, currX: 0, currY: 0 });
+    if (e.cancelable) e.preventDefault();
+    setTouchPos({ active: false, currX: 72, currY: 72 });
     onMove({ x: 0, y: 0 });
   };
 
   return (
     <div
       ref={containerRef}
+      onPointerDown={(e) => { e.preventDefault(); processTouch(e.clientX, e.clientY); }}
+      onPointerMove={(e) => { if (e.buttons > 0) { e.preventDefault(); processTouch(e.clientX, e.clientY); } }}
+      onPointerUp={(e) => { e.preventDefault(); setTouchPos({ active: false, currX: 72, currY: 72 }); onMove({ x: 0, y: 0 }); }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
       onTouchCancel={handleTouchEnd}
-      className="relative w-36 h-36 rounded-full bg-[#14261f]/85 border-2 border-[#f5d547]/60 shadow-2xl touch-none select-none flex items-center justify-center backdrop-blur-xs"
+      className="relative w-36 h-36 rounded-full bg-[#14261f]/90 border-2 border-[#f5d547]/60 shadow-2xl touch-none select-none flex items-center justify-center backdrop-blur-xs cursor-pointer"
     >
       {/* Outer Mobile Legends Ring Grid */}
       <div className="absolute inset-1.5 rounded-full border border-[#f5d547]/40 pointer-events-none flex items-center justify-center">
@@ -326,12 +324,12 @@ const JoystickControl: React.FC<JoystickControlProps> = ({ onMove }) => {
       </div>
 
       {/* Inner Stick Knob */}
-      {touchState.active ? (
+      {touchPos.active ? (
         <div
           className="absolute w-12 h-12 rounded-full bg-gradient-to-br from-[#f5d547] to-[#e8a33d] border-2 border-white shadow-xl pointer-events-none -translate-x-1/2 -translate-y-1/2 flex items-center justify-center text-[#14261f] font-bold text-xs"
           style={{
-            left: `${touchState.currX}px`,
-            top: `${touchState.currY}px`
+            left: `${touchPos.currX}px`,
+            top: `${touchPos.currY}px`
           }}
         >
           🎮
@@ -390,6 +388,11 @@ export const GameScreen: React.FC<Props> = ({
   const [survivingImps, setSurvivingImps] = useState<number>(config.impostorsCount);
   const [totalCrew, setTotalCrew] = useState<number>(4);
 
+  // Linear Interpolation (LERP) helper
+  const lerp = (start: number, end: number, factor: number): number => {
+    return start + (end - start) * Math.min(1, Math.max(0, factor));
+  };
+
   // Door interaction state
   const [nearDoor, setNearDoor] = useState<RoomDoor | null>(null);
 
@@ -402,12 +405,16 @@ export const GameScreen: React.FC<Props> = ({
     players: Player[];
     myPlayer: Player | null;
     keys: Record<string, boolean>;
+    joystickVector: { x: number; y: number };
+    inputBuffer: {
+      keys: Record<string, boolean>;
+      joystick: { x: number; y: number };
+    };
     deck: number[];
     quizStartTime: number;
     activeStationIndex: number | null;
     lastNetSyncTime: number;
     doors: RoomDoor[];
-    joystickVector: { x: number; y: number };
   }>({
     t: 0,
     over: false,
@@ -416,12 +423,16 @@ export const GameScreen: React.FC<Props> = ({
     players: [],
     myPlayer: null,
     keys: {},
+    joystickVector: { x: 0, y: 0 },
+    inputBuffer: {
+      keys: { up: false, down: false, left: false, right: false },
+      joystick: { x: 0, y: 0 }
+    },
     deck: [],
     quizStartTime: 0,
     activeStationIndex: null,
     lastNetSyncTime: 0,
-    doors: INITIAL_ROOM_DOORS.map(d => ({ ...d })),
-    joystickVector: { x: 0, y: 0 }
+    doors: INITIAL_ROOM_DOORS.map(d => ({ ...d }))
   });
 
   const bannerTimeoutRef = useRef<any>(null);
@@ -891,6 +902,10 @@ export const GameScreen: React.FC<Props> = ({
     g.bullets = [];
     g.deck = [];
     g.keys = {};
+    g.inputBuffer = {
+      keys: { up: false, down: false, left: false, right: false },
+      joystick: { x: 0, y: 0 }
+    };
     g.doors = INITIAL_ROOM_DOORS.map(d => ({ ...d }));
     g.joystickVector = { x: 0, y: 0 };
 
@@ -1158,7 +1173,9 @@ export const GameScreen: React.FC<Props> = ({
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (keyMap[e.key]) {
-        g.keys[keyMap[e.key]] = true;
+        const k = keyMap[e.key];
+        g.keys[k] = true;
+        if (g.inputBuffer) g.inputBuffer.keys[k] = true;
       }
       if (e.key === 'e' || e.key === 'E' || e.key === ' ') {
         if (!activeQuiz) {
@@ -1186,7 +1203,9 @@ export const GameScreen: React.FC<Props> = ({
 
     const onKeyUp = (e: KeyboardEvent) => {
       if (keyMap[e.key]) {
-        g.keys[keyMap[e.key]] = false;
+        const k = keyMap[e.key];
+        g.keys[k] = false;
+        if (g.inputBuffer) g.inputBuffer.keys[k] = false;
       }
     };
 
@@ -1277,18 +1296,37 @@ export const GameScreen: React.FC<Props> = ({
           // Local Player Movement
           else if (c.isMe) {
             if (c.workUntil <= g.t) {
-              let dx = (g.keys.right ? 1 : 0) - (g.keys.left ? 1 : 0);
-              let dy = (g.keys.down ? 1 : 0) - (g.keys.up ? 1 : 0);
-              if (g.joystickVector && (Math.abs(g.joystickVector.x) > 0.08 || Math.abs(g.joystickVector.y) > 0.08)) {
-                dx = g.joystickVector.x;
-                dy = g.joystickVector.y;
+              const keys = g.inputBuffer?.keys || g.keys;
+              const joy = g.inputBuffer?.joystick || g.joystickVector;
+              let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+              let dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+              if (joy && (Math.abs(joy.x) > 0.08 || Math.abs(joy.y) > 0.08)) {
+                dx = joy.x;
+                dy = joy.y;
               }
-              if (dx !== 0 || dy !== 0) {
-                const len = Math.hypot(dx, dy);
-                if (dx !== 0) c.dir = dx > 0 ? 1 : -1;
-                const speed = getSpeed(c);
+
+              const len = Math.hypot(dx, dy);
+              const speed = getSpeed(c);
+              let targetVx = 0;
+              let targetVy = 0;
+
+              if (len > 0.08) {
                 const moveMag = Math.min(1.0, len);
-                moveEntity(c, (dx / len) * moveMag * speed * dt, (dy / len) * moveMag * speed * dt);
+                targetVx = (dx / len) * moveMag * speed;
+                targetVy = (dy / len) * moveMag * speed;
+                if (dx !== 0) c.dir = dx > 0 ? 1 : -1;
+              }
+
+              // Instant acceleration with friction LERP (Roblox/Mobile Legends feel)
+              const accelFactor = 1 - Math.exp(-26 * dt);
+              c.vx = lerp(c.vx || 0, targetVx, accelFactor);
+              c.vy = lerp(c.vy || 0, targetVy, accelFactor);
+
+              if (Math.abs(c.vx) > 0.5 || Math.abs(c.vy) > 0.5) {
+                moveEntity(c, c.vx * dt, c.vy * dt);
+              } else {
+                c.vx = 0;
+                c.vy = 0;
               }
             }
           }
@@ -1359,19 +1397,39 @@ export const GameScreen: React.FC<Props> = ({
               }
             }
           } else if (imp.isMe) {
-            let dx = (g.keys.right ? 1 : 0) - (g.keys.left ? 1 : 0);
-            let dy = (g.keys.down ? 1 : 0) - (g.keys.up ? 1 : 0);
-            if (g.joystickVector && (Math.abs(g.joystickVector.x) > 0.08 || Math.abs(g.joystickVector.y) > 0.08)) {
-              dx = g.joystickVector.x;
-              dy = g.joystickVector.y;
-            }
-            if (dx !== 0 || dy !== 0) {
+            if (imp.workUntil <= g.t) {
+              const keys = g.inputBuffer?.keys || g.keys;
+              const joy = g.inputBuffer?.joystick || g.joystickVector;
+              let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+              let dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+              if (joy && (Math.abs(joy.x) > 0.08 || Math.abs(joy.y) > 0.08)) {
+                dx = joy.x;
+                dy = joy.y;
+              }
+
               const len = Math.hypot(dx, dy);
-              if (dx !== 0) imp.dir = dx > 0 ? 1 : -1;
-              imp.angle = Math.atan2(dy, dx);
               const speed = getSpeed(imp);
-              const moveMag = Math.min(1.0, len);
-              moveEntity(imp, (dx / len) * moveMag * speed * dt, (dy / len) * moveMag * speed * dt);
+              let targetVx = 0;
+              let targetVy = 0;
+
+              if (len > 0.08) {
+                const moveMag = Math.min(1.0, len);
+                targetVx = (dx / len) * moveMag * speed;
+                targetVy = (dy / len) * moveMag * speed;
+                if (dx !== 0) imp.dir = dx > 0 ? 1 : -1;
+                imp.angle = Math.atan2(dy, dx);
+              }
+
+              const accelFactor = 1 - Math.exp(-26 * dt);
+              imp.vx = lerp(imp.vx || 0, targetVx, accelFactor);
+              imp.vy = lerp(imp.vy || 0, targetVy, accelFactor);
+
+              if (Math.abs(imp.vx) > 0.5 || Math.abs(imp.vy) > 0.5) {
+                moveEntity(imp, imp.vx * dt, imp.vy * dt);
+              } else {
+                imp.vx = 0;
+                imp.vy = 0;
+              }
             }
           }
         }
@@ -1397,20 +1455,20 @@ export const GameScreen: React.FC<Props> = ({
           return true;
         });
 
-        // 4. Smooth Lerp for Remote Players in Online Mode
+        // 4. Smooth Lerp for Remote Players in Online Mode (Roblox / Mobile Legends exponential LERP)
         for (const p of g.players) {
           if (!p.isMe && !p.isAI) {
-            const tx = (p as any).targetX;
-            const ty = (p as any).targetY;
+            const tx = (p as any).targetX ?? p.remoteTargetX;
+            const ty = (p as any).targetY ?? p.remoteTargetY;
             if (typeof tx === 'number' && typeof ty === 'number') {
               const dist = Math.hypot(tx - p.x, ty - p.y);
               if (dist > 300) {
                 p.x = tx;
                 p.y = ty;
               } else if (dist > 0.5) {
-                const lerpFactor = Math.min(1.0, dt * 14);
-                p.x += (tx - p.x) * lerpFactor;
-                p.y += (ty - p.y) * lerpFactor;
+                const lerpFactor = 1 - Math.exp(-18 * dt);
+                p.x = lerp(p.x, tx, lerpFactor);
+                p.y = lerp(p.y, ty, lerpFactor);
               }
             }
           }
@@ -1990,19 +2048,23 @@ export const GameScreen: React.FC<Props> = ({
 
   const handleDpadDown = (key: string) => {
     gameRef.current.keys[key] = true;
+    if (gameRef.current.inputBuffer) gameRef.current.inputBuffer.keys[key] = true;
   };
   const handleDpadUp = (key: string) => {
     gameRef.current.keys[key] = false;
+    if (gameRef.current.inputBuffer) gameRef.current.inputBuffer.keys[key] = false;
   };
 
   const bindDpad = (dirKey: string) => {
     const press = (e: React.SyntheticEvent) => {
       if (e.cancelable) e.preventDefault();
       gameRef.current.keys[dirKey] = true;
+      if (gameRef.current.inputBuffer) gameRef.current.inputBuffer.keys[dirKey] = true;
     };
     const release = (e: React.SyntheticEvent) => {
       if (e.cancelable) e.preventDefault();
       gameRef.current.keys[dirKey] = false;
+      if (gameRef.current.inputBuffer) gameRef.current.inputBuffer.keys[dirKey] = false;
     };
     return {
       onMouseDown: press,
@@ -2233,6 +2295,7 @@ export const GameScreen: React.FC<Props> = ({
               <JoystickControl
                 onMove={(vector) => {
                   gameRef.current.joystickVector = vector;
+                  if (gameRef.current.inputBuffer) gameRef.current.inputBuffer.joystick = vector;
                 }}
               />
             ) : (

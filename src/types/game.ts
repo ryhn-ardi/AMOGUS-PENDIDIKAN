@@ -42,8 +42,13 @@ export interface Player {
   workUntil: number;
   angle?: number;
   shootCooldownUntil?: number;
+  // Velocity & LERP interpolation
+  vx?: number;
+  vy?: number;
+  remoteTargetX?: number;
+  remoteTargetY?: number;
   completedBitmask: number;
-  lockedStations: Record<number, number>; // station index -> unlock timestamp
+  lockedStations: Record<number, number>;
   
   // AI specific
   aiAccuracy?: number;
