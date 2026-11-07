@@ -241,6 +241,110 @@ const BOT_CLASSES = ["7A", "7B", "8A", "8B", "9A", "9C"];
 const BOT_IMP_NAMES = ["Bayangan", "Penyusup Hitam", "Hantu Sekolah", "Mr. X"];
 const CREW_COLORS = ["#4aa3df", "#e8a33d", "#b57edc", "#5cc98a", "#4dd0c4", "#f08ca8", "#8fb4ff", "#c5e063"];
 
+interface JoystickControlProps {
+  onMove: (vector: { x: number; y: number }) => void;
+}
+
+const JoystickControl: React.FC<JoystickControlProps> = ({ onMove }) => {
+  const [touchState, setTouchState] = useState<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    currX: number;
+    currY: number;
+  }>({ active: false, startX: 0, startY: 0, currX: 0, currY: 0 });
+
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const startX = touch.clientX - rect.left;
+    const startY = touch.clientY - rect.top;
+    setTouchState({
+      active: true,
+      startX,
+      startY,
+      currX: startX,
+      currY: startY
+    });
+    onMove({ x: 0, y: 0 });
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (!touchState.active) return;
+    const touch = e.touches[0];
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const touchX = touch.clientX - rect.left;
+    const touchY = touch.clientY - rect.top;
+
+    const dx = touchX - touchState.startX;
+    const dy = touchY - touchState.startY;
+    const dist = Math.hypot(dx, dy);
+    const maxR = 48;
+
+    const clampedDist = Math.min(dist, maxR);
+    const angle = Math.atan2(dy, dx);
+
+    const normX = clampedDist > 4 ? Math.cos(angle) * (clampedDist / maxR) : 0;
+    const normY = clampedDist > 4 ? Math.sin(angle) * (clampedDist / maxR) : 0;
+
+    setTouchState(prev => ({
+      ...prev,
+      currX: prev.startX + Math.cos(angle) * clampedDist,
+      currY: prev.startY + Math.sin(angle) * clampedDist
+    }));
+
+    onMove({ x: normX, y: normY });
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setTouchState({ active: false, startX: 0, startY: 0, currX: 0, currY: 0 });
+    onMove({ x: 0, y: 0 });
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
+      className="relative w-36 h-36 rounded-full bg-[#14261f]/85 border-2 border-[#f5d547]/60 shadow-2xl touch-none select-none flex items-center justify-center backdrop-blur-xs"
+    >
+      {/* Outer Mobile Legends Ring Grid */}
+      <div className="absolute inset-1.5 rounded-full border border-[#f5d547]/40 pointer-events-none flex items-center justify-center">
+        <div className="w-full h-0.5 bg-[#f5d547]/25 absolute" />
+        <div className="h-full w-0.5 bg-[#f5d547]/25 absolute" />
+      </div>
+
+      {/* Inner Stick Knob */}
+      {touchState.active ? (
+        <div
+          className="absolute w-12 h-12 rounded-full bg-gradient-to-br from-[#f5d547] to-[#e8a33d] border-2 border-white shadow-xl pointer-events-none -translate-x-1/2 -translate-y-1/2 flex items-center justify-center text-[#14261f] font-bold text-xs"
+          style={{
+            left: `${touchState.currX}px`,
+            top: `${touchState.currY}px`
+          }}
+        >
+          🎮
+        </div>
+      ) : (
+        <div className="w-12 h-12 rounded-full bg-[#1d3a2f] border-2 border-[#f5d547] shadow-md pointer-events-none flex items-center justify-center text-[#f5d547] text-xs font-bold">
+          🕹️
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const GameScreen: React.FC<Props> = ({
   questions,
   config,
@@ -267,6 +371,7 @@ export const GameScreen: React.FC<Props> = ({
   const [canInteractTask, setCanInteractTask] = useState<boolean>(false);
   const [bannerMsg, setBannerMsg] = useState<string>("");
   const [soundOn, setSoundOn] = useState<boolean>(sounds.isSoundEnabled());
+  const [controlMode, setControlMode] = useState<'joystick' | 'dpad'>('joystick');
 
   // Task / Quiz state
   const [activeQuiz, setActiveQuiz] = useState<{
@@ -345,19 +450,42 @@ export const GameScreen: React.FC<Props> = ({
   }, [questions]);
 
   const isWallHit = (x: number, y: number, r: number) => {
+    // 1. Static obstacles (walls, tables, lab gear, bookcases)
     for (const w of ALL_OBSTACLES) {
       const cx = Math.max(w[0], Math.min(x, w[0] + w[2]));
       const cy = Math.max(w[1], Math.min(y, w[1] + w[3]));
       if ((x - cx) ** 2 + (y - cy) ** 2 < r * r) return true;
     }
-    // Cek pintu ruangan yang tertutup (jika progress < 0.7 maka padat dan memblokir)
+
+    // 2. Dynamic Sliding Doors (Exact physical panel collision synchronized with visual animation)
     const doors = gameRef.current.doors;
     if (doors) {
       for (const d of doors) {
-        if (d.openProgress < 0.7) {
-          const cx = Math.max(d.x, Math.min(x, d.x + d.w));
-          const cy = Math.max(d.y, Math.min(y, d.y + d.h));
-          if ((x - cx) ** 2 + (y - cy) ** 2 < r * r) return true;
+        const isHoriz = d.orientation === 'horizontal';
+        const slideOffset = (isHoriz ? d.w / 2 : d.h / 2) * d.openProgress;
+
+        if (isHoriz) {
+          const halfW = d.w / 2;
+          // Left panel solid box
+          const p1x = Math.max(d.x - slideOffset, Math.min(x, d.x - slideOffset + halfW));
+          const p1y = Math.max(d.y, Math.min(y, d.y + d.h));
+          if ((x - p1x) ** 2 + (y - p1y) ** 2 < r * r) return true;
+
+          // Right panel solid box
+          const p2x = Math.max(d.x + halfW + slideOffset, Math.min(x, d.x + halfW + slideOffset + halfW));
+          const p2y = Math.max(d.y, Math.min(y, d.y + d.h));
+          if ((x - p2x) ** 2 + (y - p2y) ** 2 < r * r) return true;
+        } else {
+          const halfH = d.h / 2;
+          // Top panel solid box
+          const p1x = Math.max(d.x, Math.min(x, d.x + d.w));
+          const p1y = Math.max(d.y - slideOffset, Math.min(y, d.y - slideOffset + halfH));
+          if ((x - p1x) ** 2 + (y - p1y) ** 2 < r * r) return true;
+
+          // Bottom panel solid box
+          const p2x = Math.max(d.x, Math.min(x, d.x + d.w));
+          const p2y = Math.max(d.y + halfH + slideOffset, Math.min(y, d.y + halfH + slideOffset + halfH));
+          if ((x - p2x) ** 2 + (y - p2y) ** 2 < r * r) return true;
         }
       }
     }
@@ -385,9 +513,44 @@ export const GameScreen: React.FC<Props> = ({
     }
   }, [onlineRoom, ws, showBanner]);
 
-  const moveEntity = (p: Player, dx: number, dy: number, r = 13) => {
-    if (!isWallHit(p.x + dx, p.y, r)) p.x += dx;
-    if (!isWallHit(p.x, p.y + dy, r)) p.y += dy;
+  // Mobile Legends / Roblox style friction-free Wall Sliding Physics
+  const moveEntity = (p: Player, moveVx: number, moveVy: number, r = 13) => {
+    if (moveVx === 0 && moveVy === 0) return;
+
+    // Step 1: Direct unobstructed diagonal movement
+    if (!isWallHit(p.x + moveVx, p.y + moveVy, r)) {
+      p.x += moveVx;
+      p.y += moveVy;
+      return;
+    }
+
+    // Step 2: Slide along X axis
+    const canMoveX = !isWallHit(p.x + moveVx, p.y, r);
+    if (canMoveX) p.x += moveVx;
+
+    // Step 3: Slide along Y axis
+    const canMoveY = !isWallHit(p.x, p.y + moveVy, r);
+    if (canMoveY) p.y += moveVy;
+
+    // Step 4: Corner anti-stuck sub-stepping (smooth gliding around obstacle corners)
+    if (!canMoveX && !canMoveY) {
+      const steps = [0.7, 0.4];
+      for (const step of steps) {
+        if (!isWallHit(p.x + moveVx * step, p.y + moveVy * step, r)) {
+          p.x += moveVx * step;
+          p.y += moveVy * step;
+          break;
+        }
+        if (!isWallHit(p.x + moveVx * step, p.y, r)) {
+          p.x += moveVx * step;
+          break;
+        }
+        if (!isWallHit(p.x, p.y + moveVy * step, r)) {
+          p.y += moveVy * step;
+          break;
+        }
+      }
+    }
   };
 
   const getRoomAt = (x: number, y: number) => {
@@ -2037,83 +2200,120 @@ export const GameScreen: React.FC<Props> = ({
         </div>
 
         {/* Mobile Touch Controls for Android & Mobile Devices */}
-        <div className="flex sm:hidden items-center justify-between w-full px-2 py-1">
-          <div className="grid grid-cols-3 grid-rows-3 gap-1 w-36 h-36 select-none touch-none">
-            <div></div>
-            <button
-              {...bindDpad('up')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
-            >
-              ▲
-            </button>
-            <div></div>
-            <button
-              {...bindDpad('left')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
-            >
-              ◀
-            </button>
-            <div className="flex items-center justify-center text-[10px] text-[#335a49]">
-              <Gamepad2 className="w-5 h-5 text-[#335a49]" />
+        <div className="flex sm:hidden flex-col items-center w-full px-2 py-1 gap-2">
+          {/* Mode Switcher: Joystick 360 vs D-Pad */}
+          <div className="flex items-center justify-between w-full text-[11px] font-semibold px-1 text-[#a9bdb2]">
+            <span>Kontrol Mobile:</span>
+            <div className="flex items-center gap-1 bg-[#14261f] p-0.5 rounded-lg border border-[#335a49]">
+              <button
+                onClick={() => setControlMode('joystick')}
+                className={`px-2 py-0.5 rounded-md transition-all ${
+                  controlMode === 'joystick'
+                    ? 'bg-[#f5d547] text-[#14261f] font-bold shadow'
+                    : 'text-[#a9bdb2] hover:text-[#f3efdc]'
+                }`}
+              >
+                🕹️ Joystick 360° (ML)
+              </button>
+              <button
+                onClick={() => setControlMode('dpad')}
+                className={`px-2 py-0.5 rounded-md transition-all ${
+                  controlMode === 'dpad'
+                    ? 'bg-[#f5d547] text-[#14261f] font-bold shadow'
+                    : 'text-[#a9bdb2] hover:text-[#f3efdc]'
+                }`}
+              >
+                🎮 D-Pad (Roblox)
+              </button>
             </div>
-            <button
-              {...bindDpad('right')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
-            >
-              ▶
-            </button>
-            <div></div>
-            <button
-              {...bindDpad('down')}
-              className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
-            >
-              ▼
-            </button>
-            <div></div>
           </div>
 
-          <div className="flex flex-row items-center gap-2">
-            {/* Tombol Buka Pintu (Mobile) */}
-            <button
-              onClick={() => {
-                if (nearDoor) {
-                  toggleDoor(nearDoor.id);
-                } else if (gameRef.current.doors) {
-                  const p = gameRef.current.myPlayer;
-                  if (p) {
-                    const nearest = gameRef.current.doors.find(d => Math.hypot(p.x - (d.x + d.w/2), p.y - (d.y + d.h/2)) < 90);
-                    if (nearest) toggleDoor(nearest.id);
+          <div className="flex items-center justify-between w-full">
+            {controlMode === 'joystick' ? (
+              <JoystickControl
+                onMove={(vector) => {
+                  gameRef.current.joystickVector = vector;
+                }}
+              />
+            ) : (
+              <div className="grid grid-cols-3 grid-rows-3 gap-1 w-36 h-36 select-none touch-none">
+                <div></div>
+                <button
+                  {...bindDpad('up')}
+                  className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
+                >
+                  ▲
+                </button>
+                <div></div>
+                <button
+                  {...bindDpad('left')}
+                  className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
+                >
+                  ◀
+                </button>
+                <div className="flex items-center justify-center text-[10px] text-[#335a49]">
+                  <Gamepad2 className="w-5 h-5 text-[#335a49]" />
+                </div>
+                <button
+                  {...bindDpad('right')}
+                  className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
+                >
+                  ▶
+                </button>
+                <div></div>
+                <button
+                  {...bindDpad('down')}
+                  className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
+                >
+                  ▼
+                </button>
+                <div></div>
+              </div>
+            )}
+
+            <div className="flex flex-row items-center gap-2">
+              {/* Tombol Buka Pintu (Mobile) */}
+              <button
+                onClick={() => {
+                  if (nearDoor) {
+                    toggleDoor(nearDoor.id);
+                  } else if (gameRef.current.doors) {
+                    const p = gameRef.current.myPlayer;
+                    if (p) {
+                      const nearest = gameRef.current.doors.find(d => Math.hypot(p.x - (d.x + d.w/2), p.y - (d.y + d.h/2)) < 90);
+                      if (nearest) toggleDoor(nearest.id);
+                    }
                   }
-                }
-              }}
-              className={`w-14 h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95 transition-all ${
-                nearDoor ? 'bg-[#294237] border-2 border-[#f5d547] text-[#f5d547]' : 'bg-[#1d3a2f] border border-[#335a49] text-[#a9bdb2] opacity-70'
-              }`}
-            >
-              <DoorOpen className="w-4 h-4 mb-0.5" />
-              Pintu
-            </button>
+                }}
+                className={`w-14 h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95 transition-all ${
+                  nearDoor ? 'bg-[#294237] border-2 border-[#f5d547] text-[#f5d547]' : 'bg-[#1d3a2f] border border-[#335a49] text-[#a9bdb2] opacity-70'
+                }`}
+              >
+                <DoorOpen className="w-4 h-4 mb-0.5" />
+                Pintu
+              </button>
 
-            {/* Tombol Skill (Mobile) */}
-            <button
-              onClick={() => gameRef.current.myPlayer && triggerSkill(gameRef.current.myPlayer)}
-              className="w-14 h-14 rounded-2xl bg-[#2b6f8f] border-2 border-[#7fdcff] text-[#f3efdc] font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95"
-            >
-              {isImpostor ? <Skull className="w-4 h-4 mb-0.5" /> : <Shield className="w-4 h-4 mb-0.5" />}
-              {isImpostor ? 'Tembak' : 'Tameng'}
-            </button>
+              {/* Tombol Skill (Mobile) */}
+              <button
+                onClick={() => gameRef.current.myPlayer && triggerSkill(gameRef.current.myPlayer)}
+                className="w-14 h-14 rounded-2xl bg-[#2b6f8f] border-2 border-[#7fdcff] text-[#f3efdc] font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95"
+              >
+                {isImpostor ? <Skull className="w-4 h-4 mb-0.5" /> : <Shield className="w-4 h-4 mb-0.5" />}
+                {isImpostor ? 'Tembak' : 'Tameng'}
+              </button>
 
-            {/* Tombol Tugas (Mobile) */}
-            <button
-              onClick={interactTask}
-              disabled={!canInteractTask}
-              className={`w-14 h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95 transition-all ${
-                canInteractTask ? 'bg-[#f5d547] text-[#14261f] ring-2 ring-[#f5d547]/50' : 'bg-[#1d3a2f] border border-[#335a49] text-[#a9bdb2] opacity-40'
-              }`}
-            >
-              <Zap className="w-4 h-4 mb-0.5" />
-              Tugas
-            </button>
+              {/* Tombol Tugas (Mobile) */}
+              <button
+                onClick={interactTask}
+                disabled={!canInteractTask}
+                className={`w-14 h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95 transition-all ${
+                  canInteractTask ? 'bg-[#f5d547] text-[#14261f] ring-2 ring-[#f5d547]/50' : 'bg-[#1d3a2f] border border-[#335a49] text-[#a9bdb2] opacity-40'
+                }`}
+              >
+                <Zap className="w-4 h-4 mb-0.5" />
+                Tugas
+              </button>
+            </div>
           </div>
         </div>
       </div>
