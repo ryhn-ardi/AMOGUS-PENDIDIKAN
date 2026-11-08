@@ -626,6 +626,14 @@ app.post('/api/room/:code/action', (req, res) => {
     return res.json({ status: 'ok' });
   }
 
+  if (type === 'toggle_door') {
+    pushRoomEvent(room, 'toggle_door', {
+      doorId: payload.doorId,
+      isOpen: payload.isOpen
+    });
+    return res.json({ status: 'ok', lastEventId: room.lastEventId });
+  }
+
   if (type === 'use_shield' && player && player.role === 'crew') {
     const now = (performance.now() - room.gameStartTime) / 1000;
     player.shieldEndTime = now + room.config.shieldDuration;
@@ -833,6 +841,11 @@ wss.on('connection', (ws) => {
             shieldEndTime: player.shieldEndTime
           }, ws);
         }
+      } else if (room && msg.type === 'toggle_door') {
+        pushRoomEvent(room, 'toggle_door', {
+          doorId: msg.doorId,
+          isOpen: msg.isOpen
+        });
       }
     } catch (e) {
       console.error('Error in WS message', e);

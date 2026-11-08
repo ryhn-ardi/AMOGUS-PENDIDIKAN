@@ -509,7 +509,6 @@ export const GameScreen: React.FC<Props> = ({
     if (!door) return;
 
     door.isOpen = !door.isOpen;
-    (door as any).closeTimer = g.t + 5.0; // Pintu otomatis menutup kembali setelah 5 detik
     door.lastInteractedAt = g.t;
     sounds.playDoor(door.isOpen);
     showBanner(door.isOpen ? `${door.name} Terbuka!` : `${door.name} Ditutup!`);
@@ -1095,7 +1094,6 @@ export const GameScreen: React.FC<Props> = ({
         const door = g.doors.find(d => d.id === payload.doorId);
         if (door) {
           door.isOpen = payload.isOpen;
-          (door as any).closeTimer = g.t + 5.0;
           sounds.playDoor(door.isOpen);
         }
       } else if (type === 'game_over') {
@@ -1223,16 +1221,12 @@ export const GameScreen: React.FC<Props> = ({
       if (!g.over) {
         g.t += dt;
 
-        // 0. Update Pintu Geser Antar Ruangan
+        // 0. Update Pintu Geser Antar Ruangan (Membuka/Menutup sesuai status interaksi pemain)
         for (const door of g.doors) {
           if (door.isOpen) {
-            door.openProgress = Math.min(1.0, door.openProgress + dt * 3.5);
-            if (g.t > ((door as any).closeTimer || 0)) {
-              door.isOpen = false;
-              sounds.playDoor(false);
-            }
+            door.openProgress = Math.min(1.0, door.openProgress + dt * 4.0);
           } else {
-            door.openProgress = Math.max(0.0, door.openProgress - dt * 3.5);
+            door.openProgress = Math.max(0.0, door.openProgress - dt * 4.0);
           }
         }
 
@@ -1462,11 +1456,11 @@ export const GameScreen: React.FC<Props> = ({
             const ty = (p as any).targetY ?? p.remoteTargetY;
             if (typeof tx === 'number' && typeof ty === 'number') {
               const dist = Math.hypot(tx - p.x, ty - p.y);
-              if (dist > 300) {
+              if (dist > 250) {
                 p.x = tx;
                 p.y = ty;
-              } else if (dist > 0.5) {
-                const lerpFactor = 1 - Math.exp(-18 * dt);
+              } else if (dist > 0.3) {
+                const lerpFactor = 1 - Math.exp(-24 * dt);
                 p.x = lerp(p.x, tx, lerpFactor);
                 p.y = lerp(p.y, ty, lerpFactor);
               }
@@ -1474,16 +1468,18 @@ export const GameScreen: React.FC<Props> = ({
           }
         }
 
-        // 5. Throttled Position Broadcast (~11Hz)
+        // 5. Throttled Position Broadcast (Fast 20Hz Network Sync)
         if (onlineRoom && g.myPlayer && !g.myPlayer.dead) {
           const nowMs = performance.now();
-          if (nowMs - g.lastNetSyncTime > 90) {
+          if (nowMs - g.lastNetSyncTime > 50) {
             g.lastNetSyncTime = nowMs;
             const payload = {
               x: Math.round(g.myPlayer.x),
               y: Math.round(g.myPlayer.y),
               dir: g.myPlayer.dir,
               angle: g.myPlayer.angle,
+              vx: Math.round(g.myPlayer.vx || 0),
+              vy: Math.round(g.myPlayer.vy || 0),
               workUntil: g.myPlayer.workUntil,
               shieldEndTime: g.myPlayer.shieldEndTime
             };
@@ -2198,17 +2194,17 @@ export const GameScreen: React.FC<Props> = ({
 
         {/* In-Game Announcement Message */}
         {bannerMsg && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-black/85 border border-[#335a49] text-xs sm:text-sm font-semibold text-[#f5d547] shadow-xl pointer-events-none transition-all duration-300">
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-black/85 border border-[#335a49] text-xs sm:text-sm font-semibold text-[#f5d547] shadow-xl pointer-events-none transition-all duration-300 z-30">
             {bannerMsg}
           </div>
         )}
 
-        {/* Action Prompts */}
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex flex-col sm:flex-row items-center gap-2 pointer-events-auto">
+        {/* Central Action Prompts for Desktop Keyboard */}
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 hidden sm:flex flex-col sm:flex-row items-center gap-2 pointer-events-auto z-20">
           {nearDoor && (
             <button
               onClick={() => toggleDoor(nearDoor.id)}
-              className="px-4 py-2 rounded-xl bg-[#294237] border-2 border-[#f5d547] text-[#f3efdc] font-bold text-xs sm:text-sm shadow-xl flex items-center gap-2 animate-bounce cursor-pointer hover:bg-[#345245]"
+              className="px-4 py-2 rounded-xl bg-[#294237]/90 border-2 border-[#f5d547] text-[#f3efdc] font-bold text-xs sm:text-sm shadow-xl flex items-center gap-2 animate-bounce cursor-pointer hover:bg-[#345245]"
             >
               <DoorOpen className="w-4 h-4 text-[#f5d547]" />
               <span>[F] {nearDoor.isOpen ? 'Tutup' : 'Buka'} {nearDoor.name}</span>
@@ -2225,6 +2221,147 @@ export const GameScreen: React.FC<Props> = ({
             </button>
           )}
         </div>
+
+        {/* Mobile HUD Floating Touch Controls Layer (Embedded directly on canvas viewport) */}
+        {!isSpectator && (
+          <div className="absolute inset-0 pointer-events-none z-30 flex flex-col justify-between p-2.5 sm:p-4">
+            {/* Top Right: Mode Switcher Badge (Joystick 360° vs D-Pad) */}
+            <div className="flex justify-end items-start w-full">
+              <div className="pointer-events-auto flex items-center gap-1 bg-[#14261f]/85 backdrop-blur-md px-2 py-1 rounded-full border border-[#335a49]/80 shadow-lg text-[10px] sm:text-xs text-[#a9bdb2]">
+                <span className="hidden xs:inline font-semibold text-[#f3efdc]">Kontrol:</span>
+                <button
+                  onClick={() => setControlMode('joystick')}
+                  className={`px-2 py-0.5 rounded-full transition-all ${
+                    controlMode === 'joystick'
+                      ? 'bg-[#f5d547] text-[#14261f] font-bold shadow'
+                      : 'hover:text-[#f3efdc]'
+                  }`}
+                >
+                  🕹️ 360°
+                </button>
+                <button
+                  onClick={() => setControlMode('dpad')}
+                  className={`px-2 py-0.5 rounded-full transition-all ${
+                    controlMode === 'dpad'
+                      ? 'bg-[#f5d547] text-[#14261f] font-bold shadow'
+                      : 'hover:text-[#f3efdc]'
+                  }`}
+                >
+                  🎮 D-Pad
+                </button>
+              </div>
+            </div>
+
+            {/* Bottom Row: Left Virtual Joystick / D-Pad & Right Action Buttons */}
+            <div className="flex items-end justify-between w-full">
+              {/* Bottom Left: Floating Joystick 360° or D-Pad */}
+              <div className="pointer-events-auto select-none touch-none scale-85 sm:scale-100 origin-bottom-left">
+                {controlMode === 'joystick' ? (
+                  <JoystickControl
+                    onMove={(vector) => {
+                      gameRef.current.joystickVector = vector;
+                      if (gameRef.current.inputBuffer) gameRef.current.inputBuffer.joystick = vector;
+                    }}
+                  />
+                ) : (
+                  <div className="grid grid-cols-3 grid-rows-3 gap-1 w-32 h-32 sm:w-36 sm:h-36 bg-[#14261f]/85 backdrop-blur-md p-1.5 rounded-2xl border border-[#335a49]/80 shadow-2xl">
+                    <div></div>
+                    <button
+                      {...bindDpad('up')}
+                      className="bg-[#1d3a2f]/90 border border-[#335a49] rounded-xl flex items-center justify-center text-lg text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
+                    >
+                      ▲
+                    </button>
+                    <div></div>
+                    <button
+                      {...bindDpad('left')}
+                      className="bg-[#1d3a2f]/90 border border-[#335a49] rounded-xl flex items-center justify-center text-lg text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
+                    >
+                      ◀
+                    </button>
+                    <div className="flex items-center justify-center text-[10px] text-[#335a49]">
+                      <Gamepad2 className="w-4 h-4 text-[#335a49]" />
+                    </div>
+                    <button
+                      {...bindDpad('right')}
+                      className="bg-[#1d3a2f]/90 border border-[#335a49] rounded-xl flex items-center justify-center text-lg text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
+                    >
+                      ▶
+                    </button>
+                    <div></div>
+                    <button
+                      {...bindDpad('down')}
+                      className="bg-[#1d3a2f]/90 border border-[#335a49] rounded-xl flex items-center justify-center text-lg text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
+                    >
+                      ▼
+                    </button>
+                    <div></div>
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom Right: Floating Action Buttons (Door, Skill, Task) */}
+              <div className="pointer-events-auto flex items-center gap-1.5 sm:gap-2.5 select-none touch-none scale-90 sm:scale-100 origin-bottom-right">
+                {/* Tombol Buka Pintu */}
+                <button
+                  onClick={() => {
+                    if (nearDoor) {
+                      toggleDoor(nearDoor.id);
+                    } else if (gameRef.current.doors) {
+                      const p = gameRef.current.myPlayer;
+                      if (p) {
+                        const nearest = gameRef.current.doors.find(d => Math.hypot(p.x - (d.x + d.w/2), p.y - (d.y + d.h/2)) < 90);
+                        if (nearest) toggleDoor(nearest.id);
+                      }
+                    }
+                  }}
+                  className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow-xl active:scale-95 transition-all backdrop-blur-md cursor-pointer ${
+                    nearDoor
+                      ? 'bg-[#294237]/90 border-2 border-[#f5d547] text-[#f5d547] animate-pulse ring-2 ring-[#f5d547]/40'
+                      : 'bg-[#1d3a2f]/80 border border-[#335a49] text-[#a9bdb2] opacity-70'
+                  }`}
+                >
+                  <DoorOpen className="w-4 h-4 mb-0.5" />
+                  <span className="text-[10px]">Pintu</span>
+                </button>
+
+                {/* Tombol Skill (Tembak / Tameng) */}
+                <button
+                  onClick={() => gameRef.current.myPlayer && triggerSkill(gameRef.current.myPlayer)}
+                  disabled={shieldCooldownLeft > 0}
+                  className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow-xl active:scale-95 transition-all backdrop-blur-md cursor-pointer ${
+                    isImpostor
+                      ? 'bg-[#e0463c]/90 border-2 border-[#ff8a5c] text-white'
+                      : isShieldActive
+                      ? 'bg-[#7fdcff]/90 border-2 border-white text-[#0a2332] animate-pulse'
+                      : shieldCooldownLeft <= 0
+                      ? 'bg-[#2b6f8f]/90 border-2 border-[#7fdcff] text-[#f3efdc]'
+                      : 'bg-[#14261f]/80 border border-[#335a49] text-[#a9bdb2] opacity-50'
+                  }`}
+                >
+                  {isImpostor ? <Skull className="w-4 h-4 mb-0.5" /> : <Shield className="w-4 h-4 mb-0.5" />}
+                  <span className="text-[10px]">
+                    {isImpostor ? 'Tembak' : shieldCooldownLeft > 0 ? `${shieldCooldownLeft}s` : 'Tameng'}
+                  </span>
+                </button>
+
+                {/* Tombol Utama: Tugas */}
+                <button
+                  onClick={interactTask}
+                  disabled={!canInteractTask}
+                  className={`w-14 h-14 sm:w-16 sm:h-16 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow-2xl active:scale-95 transition-all backdrop-blur-md cursor-pointer ${
+                    canInteractTask
+                      ? 'bg-[#f5d547] text-[#14261f] ring-4 ring-[#f5d547]/50 font-extrabold animate-bounce'
+                      : 'bg-[#1d3a2f]/80 border border-[#335a49] text-[#a9bdb2] opacity-40'
+                  }`}
+                >
+                  <Zap className="w-5 h-5 mb-0.5" />
+                  <span className="text-[10px]">Tugas</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Spectator Target Selector */}
@@ -2255,129 +2392,13 @@ export const GameScreen: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Controls Hint & Mobile Virtual D-Pad */}
-      <div className="w-full mt-2.5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-[#a9bdb2]">
-        <div className="hidden sm:block">
+      {/* Footer Hints for Desktop Users */}
+      <div className="w-full mt-2 flex items-center justify-between text-xs text-[#a9bdb2] px-1">
+        <div>
           Gerak: <strong>WASD / Panah</strong> · Tugas: <strong>E / Spasi</strong> · Buka Pintu: <strong>F</strong> · Skill: <strong>Q</strong>
         </div>
-
-        {/* Mobile Touch Controls for Android & Mobile Devices */}
-        <div className="flex sm:hidden flex-col items-center w-full px-2 py-1 gap-2">
-          {/* Mode Switcher: Joystick 360 vs D-Pad */}
-          <div className="flex items-center justify-between w-full text-[11px] font-semibold px-1 text-[#a9bdb2]">
-            <span>Kontrol Mobile:</span>
-            <div className="flex items-center gap-1 bg-[#14261f] p-0.5 rounded-lg border border-[#335a49]">
-              <button
-                onClick={() => setControlMode('joystick')}
-                className={`px-2 py-0.5 rounded-md transition-all ${
-                  controlMode === 'joystick'
-                    ? 'bg-[#f5d547] text-[#14261f] font-bold shadow'
-                    : 'text-[#a9bdb2] hover:text-[#f3efdc]'
-                }`}
-              >
-                🕹️ Joystick 360° (ML)
-              </button>
-              <button
-                onClick={() => setControlMode('dpad')}
-                className={`px-2 py-0.5 rounded-md transition-all ${
-                  controlMode === 'dpad'
-                    ? 'bg-[#f5d547] text-[#14261f] font-bold shadow'
-                    : 'text-[#a9bdb2] hover:text-[#f3efdc]'
-                }`}
-              >
-                🎮 D-Pad (Roblox)
-              </button>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between w-full">
-            {controlMode === 'joystick' ? (
-              <JoystickControl
-                onMove={(vector) => {
-                  gameRef.current.joystickVector = vector;
-                  if (gameRef.current.inputBuffer) gameRef.current.inputBuffer.joystick = vector;
-                }}
-              />
-            ) : (
-              <div className="grid grid-cols-3 grid-rows-3 gap-1 w-36 h-36 select-none touch-none">
-                <div></div>
-                <button
-                  {...bindDpad('up')}
-                  className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
-                >
-                  ▲
-                </button>
-                <div></div>
-                <button
-                  {...bindDpad('left')}
-                  className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
-                >
-                  ◀
-                </button>
-                <div className="flex items-center justify-center text-[10px] text-[#335a49]">
-                  <Gamepad2 className="w-5 h-5 text-[#335a49]" />
-                </div>
-                <button
-                  {...bindDpad('right')}
-                  className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
-                >
-                  ▶
-                </button>
-                <div></div>
-                <button
-                  {...bindDpad('down')}
-                  className="bg-[#1d3a2f] border border-[#335a49] rounded-xl flex items-center justify-center text-xl text-[#f3efdc] active:bg-[#f5d547] active:text-[#14261f] shadow select-none touch-none cursor-pointer"
-                >
-                  ▼
-                </button>
-                <div></div>
-              </div>
-            )}
-
-            <div className="flex flex-row items-center gap-2">
-              {/* Tombol Buka Pintu (Mobile) */}
-              <button
-                onClick={() => {
-                  if (nearDoor) {
-                    toggleDoor(nearDoor.id);
-                  } else if (gameRef.current.doors) {
-                    const p = gameRef.current.myPlayer;
-                    if (p) {
-                      const nearest = gameRef.current.doors.find(d => Math.hypot(p.x - (d.x + d.w/2), p.y - (d.y + d.h/2)) < 90);
-                      if (nearest) toggleDoor(nearest.id);
-                    }
-                  }
-                }}
-                className={`w-14 h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95 transition-all ${
-                  nearDoor ? 'bg-[#294237] border-2 border-[#f5d547] text-[#f5d547]' : 'bg-[#1d3a2f] border border-[#335a49] text-[#a9bdb2] opacity-70'
-                }`}
-              >
-                <DoorOpen className="w-4 h-4 mb-0.5" />
-                Pintu
-              </button>
-
-              {/* Tombol Skill (Mobile) */}
-              <button
-                onClick={() => gameRef.current.myPlayer && triggerSkill(gameRef.current.myPlayer)}
-                className="w-14 h-14 rounded-2xl bg-[#2b6f8f] border-2 border-[#7fdcff] text-[#f3efdc] font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95"
-              >
-                {isImpostor ? <Skull className="w-4 h-4 mb-0.5" /> : <Shield className="w-4 h-4 mb-0.5" />}
-                {isImpostor ? 'Tembak' : 'Tameng'}
-              </button>
-
-              {/* Tombol Tugas (Mobile) */}
-              <button
-                onClick={interactTask}
-                disabled={!canInteractTask}
-                className={`w-14 h-14 rounded-2xl font-bold text-xs flex flex-col items-center justify-center shadow active:scale-95 transition-all ${
-                  canInteractTask ? 'bg-[#f5d547] text-[#14261f] ring-2 ring-[#f5d547]/50' : 'bg-[#1d3a2f] border border-[#335a49] text-[#a9bdb2] opacity-40'
-                }`}
-              >
-                <Zap className="w-4 h-4 mb-0.5" />
-                Tugas
-              </button>
-            </div>
-          </div>
+        <div className="text-[11px] text-[#6fd08c] font-medium">
+          📱 Kontrol Sentuh Aktif di Layar
         </div>
       </div>
 
