@@ -399,6 +399,64 @@ export const firebaseMultiplayer = {
   },
 
   /**
+   * Synchronize door state in Firestore with timestamp-based conflict resolution and 600ms debounce
+   */
+  async toggleDoorState(roomCode: string, doorId: string, isOpen: boolean, timestamp: number) {
+    try {
+      const cleanCode = roomCode.trim().toUpperCase();
+      const doorDocRef = doc(db, 'rooms', cleanCode, 'doors', doorId);
+      
+      const snap = await getDoc(doorDocRef);
+      if (snap.exists()) {
+        const currentData = snap.data();
+        const prevTs = Number(currentData.updatedAt || 0);
+        // Ignore conflicting updates within 600ms or older timestamps
+        if (timestamp <= prevTs || (timestamp - prevTs < 600 && currentData.isOpen !== isOpen)) {
+          return;
+        }
+      }
+
+      await setDoc(doorDocRef, sanitizeForFirestore({
+        doorId,
+        isOpen,
+        updatedAt: timestamp,
+        updatedBy: getClientId()
+      }));
+
+      await this.sendEvent(cleanCode, 'toggle_door', {
+        doorId,
+        isOpen,
+        timestamp
+      });
+    } catch (e) {
+      // Silently handled for smooth door sync
+    }
+  },
+
+  /**
+   * Listen to real-time door states from Firestore
+   */
+  subscribeDoors(roomCode: string, callback: (doors: Record<string, { isOpen: boolean; updatedAt: number }>) => void): Unsubscribe {
+    const cleanCode = roomCode.trim().toUpperCase();
+    const doorsCol = collection(db, 'rooms', cleanCode, 'doors');
+    return onSnapshot(doorsCol, (snapshot) => {
+      const doorMap: Record<string, { isOpen: boolean; updatedAt: number }> = {};
+      snapshot.forEach(d => {
+        const data = d.data();
+        if (data && data.doorId) {
+          doorMap[data.doorId] = {
+            isOpen: !!data.isOpen,
+            updatedAt: Number(data.updatedAt || 0)
+          };
+        }
+      });
+      callback(doorMap);
+    }, (error) => {
+      // Silently handled
+    });
+  },
+
+  /**
    * Host action: Start game, assign roles, and distribute randomized questions
    */
   async startGame(roomCode: string, questionsPool?: Question[], configInput?: GameConfig) {

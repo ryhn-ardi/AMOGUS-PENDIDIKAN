@@ -474,6 +474,9 @@ export const GameScreen: React.FC<Props> = ({
     const doors = gameRef.current.doors;
     if (doors) {
       for (const d of doors) {
+        // Only block player movement when the door is closed/closing (openProgress < 0.6)
+        if (d.openProgress >= 0.6) continue;
+
         const isHoriz = d.orientation === 'horizontal';
         const slideOffset = (isHoriz ? d.w / 2 : d.h / 2) * d.openProgress;
 
@@ -510,18 +513,24 @@ export const GameScreen: React.FC<Props> = ({
     const door = g.doors.find(d => d.id === doorId);
     if (!door) return;
 
+    // Local 600ms debounce per door
+    if (door.lastInteractedAt && (g.t - door.lastInteractedAt < 0.6)) return;
+
+    const nowMs = Date.now();
     door.isOpen = !door.isOpen;
     door.lastInteractedAt = g.t;
+    (door as any).lastNetTimestamp = nowMs;
     sounds.playDoor(door.isOpen);
     showBanner(door.isOpen ? `${door.name} Terbuka!` : `${door.name} Ditutup!`);
 
     if (onlineRoom) {
-      const payload = { doorId, isOpen: door.isOpen };
+      const payload = { doorId, isOpen: door.isOpen, timestamp: nowMs };
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'toggle_door', ...payload }));
+      } else {
+        api.sendAction(onlineRoom.code, 'toggle_door', payload).catch(() => {});
       }
-      api.sendAction(onlineRoom.code, 'toggle_door', payload).catch(() => {});
-      firebaseMultiplayer.sendEvent(onlineRoom.code, 'toggle_door', payload).catch(() => {});
+      firebaseMultiplayer.toggleDoorState(onlineRoom.code, doorId, door.isOpen, nowMs).catch(() => {});
     }
   }, [onlineRoom, ws, showBanner]);
 
@@ -1095,8 +1104,15 @@ export const GameScreen: React.FC<Props> = ({
       } else if (type === 'toggle_door') {
         const door = g.doors.find(d => d.id === payload.doorId);
         if (door) {
-          door.isOpen = payload.isOpen;
-          sounds.playDoor(door.isOpen);
+          const incomingTs = Number(payload.timestamp || Date.now());
+          const localTs = Number((door as any).lastNetTimestamp || 0);
+
+          if (incomingTs > localTs && door.isOpen !== payload.isOpen) {
+            door.isOpen = payload.isOpen;
+            (door as any).lastNetTimestamp = incomingTs;
+            door.lastInteractedAt = g.t;
+            sounds.playDoor(door.isOpen);
+          }
         }
       } else if (type === 'game_over') {
         g.over = true;
@@ -1124,9 +1140,10 @@ export const GameScreen: React.FC<Props> = ({
       };
     }
 
-    // Direct Firebase Real-time Synchronization for Players and Events
+    // Direct Firebase Real-time Synchronization for Players, Doors, and Events
     let unsubPlayers: (() => void) | null = null;
     let unsubEvents: (() => void) | null = null;
+    let unsubDoors: (() => void) | null = null;
 
     if (onlineRoom) {
       const activeMyId = myPlayerId || '';
@@ -1160,6 +1177,22 @@ export const GameScreen: React.FC<Props> = ({
         if (g.over) return;
         if (event && event.type && event.payload) {
           processGameEvent(event.type, event.payload);
+        }
+      });
+
+      unsubDoors = firebaseMultiplayer.subscribeDoors(onlineRoom.code, (doorMap) => {
+        if (g.over) return;
+        for (const [doorId, state] of Object.entries(doorMap)) {
+          const door = g.doors.find(d => d.id === doorId);
+          if (door) {
+            const localTs = Number((door as any).lastNetTimestamp || 0);
+            if (state.updatedAt > localTs && door.isOpen !== state.isOpen) {
+              door.isOpen = state.isOpen;
+              (door as any).lastNetTimestamp = state.updatedAt;
+              door.lastInteractedAt = g.t;
+              sounds.playDoor(door.isOpen);
+            }
+          }
         }
       });
     }
@@ -1234,9 +1267,9 @@ export const GameScreen: React.FC<Props> = ({
         // 0. Update Pintu Geser Antar Ruangan (Membuka/Menutup sesuai status interaksi pemain)
         for (const door of g.doors) {
           if (door.isOpen) {
-            door.openProgress = Math.min(1.0, door.openProgress + dt * 4.0);
+            door.openProgress = Math.min(1.0, door.openProgress + dt * 6.0);
           } else {
-            door.openProgress = Math.max(0.0, door.openProgress - dt * 4.0);
+            door.openProgress = Math.max(0.0, door.openProgress - dt * 6.0);
           }
         }
 

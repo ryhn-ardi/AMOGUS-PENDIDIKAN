@@ -627,10 +627,21 @@ app.post('/api/room/:code/action', (req, res) => {
   }
 
   if (type === 'toggle_door') {
-    pushRoomEvent(room, 'toggle_door', {
-      doorId: payload.doorId,
-      isOpen: payload.isOpen
-    });
+    const doorId = String(payload.doorId || '');
+    const isOpen = !!payload.isOpen;
+    const ts = Number(payload.timestamp || Date.now());
+
+    if (!(room as any).doorStates) (room as any).doorStates = new Map();
+    const existing = (room as any).doorStates.get(doorId);
+
+    if (!existing || (ts > existing.updatedAt && (ts - existing.updatedAt >= 500 || existing.isOpen !== isOpen))) {
+      (room as any).doorStates.set(doorId, { isOpen, updatedAt: ts });
+      pushRoomEvent(room, 'toggle_door', {
+        doorId,
+        isOpen,
+        timestamp: ts
+      });
+    }
     return res.json({ status: 'ok', lastEventId: room.lastEventId });
   }
 
@@ -842,10 +853,21 @@ wss.on('connection', (ws) => {
           }, ws);
         }
       } else if (room && msg.type === 'toggle_door') {
-        pushRoomEvent(room, 'toggle_door', {
-          doorId: msg.doorId,
-          isOpen: msg.isOpen
-        });
+        const doorId = String(msg.doorId || '');
+        const isOpen = !!msg.isOpen;
+        const ts = Number(msg.timestamp || Date.now());
+
+        if (!(room as any).doorStates) (room as any).doorStates = new Map();
+        const existing = (room as any).doorStates.get(doorId);
+
+        if (!existing || (ts > existing.updatedAt && (ts - existing.updatedAt >= 500 || existing.isOpen !== isOpen))) {
+          (room as any).doorStates.set(doorId, { isOpen, updatedAt: ts });
+          pushRoomEvent(room, 'toggle_door', {
+            doorId,
+            isOpen,
+            timestamp: ts
+          });
+        }
       }
     } catch (e) {
       console.error('Error in WS message', e);
