@@ -47,12 +47,24 @@ export default function App() {
   const [lastMatchSummary, setLastMatchSummary] = useState<MatchSummary | null>(null);
   const [showLeaderboard, setShowLeaderboard] = useState<boolean>(false);
 
-  // Online Multiplayer State
+  // Online Multiplayer State & Connection Resilience
   const wsRef = useRef<WebSocket | null>(null);
   const lastEventIdRef = useRef<number>(0);
+  const reconnectAttemptsRef = useRef<number>(0);
   const [onlineRoom, setOnlineRoom] = useState<OnlineRoomData | null>(null);
   const [roomPlayers, setRoomPlayers] = useState<Player[]>([]);
   const [myPlayer, setMyPlayer] = useState<Player | null>(null);
+  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const onlineRoomRef = useRef<OnlineRoomData | null>(onlineRoom);
+  const myPlayerRef = useRef<Player | null>(myPlayer);
+
+  useEffect(() => {
+    onlineRoomRef.current = onlineRoom;
+  }, [onlineRoom]);
+
+  useEffect(() => {
+    myPlayerRef.current = myPlayer;
+  }, [myPlayer]);
   const [initialOnlineStations, setInitialOnlineStations] = useState<TaskStation[]>([]);
   const [chatMessages, setChatMessages] = useState<Array<{ senderName: string; senderClass?: string; senderColor: string; text: string; time: string }>>([]);
   const [onlineError, setOnlineError] = useState<string>('');
@@ -122,7 +134,7 @@ export default function App() {
     };
   }, []);
 
-  // WebSocket Connection Management (With graceful auto-fallback)
+  // WebSocket Connection Management (With aggressive auto-reconnect & session recovery)
   const connectWebSocket = useCallback(() => {
     if (typeof window === 'undefined') return;
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
@@ -138,25 +150,49 @@ export default function App() {
 
       ws.onopen = () => {
         setServerOnline(true);
+        reconnectAttemptsRef.current = 0;
+        setIsReconnecting(false);
+
+        // Re-register active session on WebSocket server immediately
+        if (onlineRoomRef.current && myPlayerRef.current) {
+          ws.send(JSON.stringify({
+            type: 'reconnect_player',
+            roomCode: onlineRoomRef.current.code,
+            playerId: myPlayerRef.current.id
+          }));
+        }
       };
 
       ws.onclose = () => {
+        const attempt = reconnectAttemptsRef.current + 1;
+        reconnectAttemptsRef.current = attempt;
+        if (onlineRoomRef.current) {
+          setIsReconnecting(true);
+        }
+
+        // Fast aggressive exponential backoff: 300ms -> 600ms -> 1.1s -> 2.2s -> 4s
+        const backoff = Math.min(4000, Math.floor(250 * Math.pow(1.4, Math.min(attempt, 8)) + Math.random() * 200));
         setTimeout(() => {
-          if (wsRef.current === ws) {
+          if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
             connectWebSocket();
           }
-        }, 10000);
+        }, backoff);
       };
 
       ws.onerror = () => {
-        // Handled silently by HTTP REST fallback
+        if (onlineRoomRef.current) setIsReconnecting(true);
       };
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
 
-          if (msg.type === 'room_created' || msg.type === 'room_joined') {
+          if (msg.type === 'reconnected') {
+            setIsReconnecting(false);
+            if (msg.room) setOnlineRoom(msg.room);
+            if (msg.players) setRoomPlayers(msg.players);
+            if (msg.myPlayer) setMyPlayer(msg.myPlayer);
+          } else if (msg.type === 'room_created' || msg.type === 'room_joined') {
             setOnlineRoom(msg.room);
             setRoomPlayers(msg.players || []);
             setMyPlayer(msg.myPlayer || null);
@@ -193,22 +229,55 @@ export default function App() {
         }
       };
     } catch {
-      // Ignored: HTTP sync active
+      // Handled silently by fallback
     }
   }, [showOnlineError]);
 
+  // Session & Network Recovery Handler
   useEffect(() => {
     connectWebSocket();
 
-    try {
-      // Clean any stale mock room keys from localStorage
-      for (let i = localStorage.length - 1; i >= 0; i--) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('dk_active_room_')) {
-          localStorage.removeItem(key);
+    const restoreSession = async () => {
+      try {
+        const saved = sessionStorage.getItem('dk_active_session');
+        if (saved && !onlineRoomRef.current) {
+          const sess = JSON.parse(saved);
+          if (sess && sess.code) {
+            const res = await api.joinRoom({
+              roomCode: sess.code,
+              name: sess.name || playerName,
+              playerClass: sess.playerClass || playerClass,
+              attendanceNumber: sess.attendanceNumber || attendanceNumber,
+              isSpectator: sess.isSpectator
+            });
+            setOnlineRoom(res.room);
+            setRoomPlayers(res.players || []);
+            setMyPlayer(res.myPlayer || null);
+            setIsOnlineMode(true);
+            if (res.room.status === 'playing') setView('game');
+            else setView('online_lobby');
+          }
         }
-      }
+      } catch {}
+    };
 
+    restoreSession();
+
+    const handleOnline = () => {
+      setIsReconnecting(false);
+      setServerOnline(true);
+      connectWebSocket();
+      restoreSession();
+    };
+
+    const handleOffline = () => {
+      setIsReconnecting(true);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    try {
       const savedConfig = localStorage.getItem('dk_cf_v2');
       if (savedConfig) setConfig(prev => ({ ...prev, ...JSON.parse(savedConfig) }));
       const savedName = localStorage.getItem('dk_player_name');
@@ -220,9 +289,11 @@ export default function App() {
     } catch {}
 
     return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
       if (wsRef.current) wsRef.current.close();
     };
-  }, [connectWebSocket]);
+  }, [connectWebSocket, playerName, playerClass, attendanceNumber]);
 
   // Real-time Firebase Synchronization for Lobby and Room
   useEffect(() => {
@@ -345,6 +416,15 @@ export default function App() {
       lastEventIdRef.current = data.lastEventId || 0;
       setOnlineError('');
       setView('online_lobby');
+      try {
+        sessionStorage.setItem('dk_active_session', JSON.stringify({
+          code: data.room.code,
+          name,
+          playerClass: cls,
+          attendanceNumber: absen,
+          isSpectator: spectator
+        }));
+      } catch {}
     } catch (err: any) {
       showOnlineError(err);
     }
@@ -368,6 +448,15 @@ export default function App() {
       lastEventIdRef.current = data.lastEventId || 0;
       setOnlineError('');
       setView('online_lobby');
+      try {
+        sessionStorage.setItem('dk_active_session', JSON.stringify({
+          code: data.room.code,
+          name,
+          playerClass: cls,
+          attendanceNumber: absen,
+          isSpectator: spectator
+        }));
+      } catch {}
     } catch (err: any) {
       showOnlineError(err);
     }
@@ -387,6 +476,9 @@ export default function App() {
   };
 
   const handleLeaveOnlineRoom = async () => {
+    try {
+      sessionStorage.removeItem('dk_active_session');
+    } catch {}
     if (onlineRoom) {
       try {
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -574,6 +666,14 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Auto-reconnect active indicator badge */}
+      {isReconnecting && onlineRoom && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-2xl bg-[#e0463c]/95 border-2 border-white text-white text-xs sm:text-sm font-bold shadow-2xl flex items-center gap-2 animate-bounce backdrop-blur-md">
+          <RefreshCw className="w-4 h-4 animate-spin text-[#f5d547]" />
+          <span>Sinyal Terputus · Menghubungkan Kembali ke Room ({onlineRoom.code})...</span>
+        </div>
+      )}
 
       {/* Pesan Kesalahan Online (jika ada) */}
       {onlineError && (

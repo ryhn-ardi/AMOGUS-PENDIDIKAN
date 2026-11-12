@@ -410,6 +410,7 @@ export const GameScreen: React.FC<Props> = ({
       keys: Record<string, boolean>;
       joystick: { x: number; y: number };
     };
+    cameraPos: { x: number; y: number };
     deck: number[];
     quizStartTime: number;
     activeStationIndex: number | null;
@@ -428,6 +429,7 @@ export const GameScreen: React.FC<Props> = ({
       keys: { up: false, down: false, left: false, right: false },
       joystick: { x: 0, y: 0 }
     },
+    cameraPos: { x: 0, y: 0 },
     deck: [],
     quizStartTime: 0,
     activeStationIndex: null,
@@ -1207,8 +1209,16 @@ export const GameScreen: React.FC<Props> = ({
       }
     };
 
+    const onBlur = () => {
+      g.keys = {};
+      if (g.inputBuffer) {
+        g.inputBuffer.keys = { up: false, down: false, left: false, right: false };
+      }
+    };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
 
     // Animation Loop
     let animId: number;
@@ -1311,8 +1321,9 @@ export const GameScreen: React.FC<Props> = ({
                 if (dx !== 0) c.dir = dx > 0 ? 1 : -1;
               }
 
-              // Instant acceleration with friction LERP (Roblox/Mobile Legends feel)
-              const accelFactor = 1 - Math.exp(-26 * dt);
+              const isTouchInput = joy && (Math.abs(joy.x) > 0.08 || Math.abs(joy.y) > 0.08);
+              const rate = isTouchInput ? 22 : 14;
+              const accelFactor = 1 - Math.exp(-rate * dt);
               c.vx = lerp(c.vx || 0, targetVx, accelFactor);
               c.vy = lerp(c.vy || 0, targetVy, accelFactor);
 
@@ -1414,7 +1425,9 @@ export const GameScreen: React.FC<Props> = ({
                 imp.angle = Math.atan2(dy, dx);
               }
 
-              const accelFactor = 1 - Math.exp(-26 * dt);
+              const isTouchInput = joy && (Math.abs(joy.x) > 0.08 || Math.abs(joy.y) > 0.08);
+              const rate = isTouchInput ? 22 : 14;
+              const accelFactor = 1 - Math.exp(-rate * dt);
               imp.vx = lerp(imp.vx || 0, targetVx, accelFactor);
               imp.vy = lerp(imp.vy || 0, targetVy, accelFactor);
 
@@ -1570,8 +1583,19 @@ export const GameScreen: React.FC<Props> = ({
     let oy = 0;
 
     if (targetEntity) {
-      cx = Math.max(0, Math.min(W - cw, targetEntity.x - cw / 2));
-      cy = Math.max(0, Math.min(H - ch, targetEntity.y - ch / 2));
+      const targetCx = Math.max(0, Math.min(W - cw, targetEntity.x - cw / 2));
+      const targetCy = Math.max(0, Math.min(H - ch, targetEntity.y - ch / 2));
+
+      if (g.cameraPos.x === 0 && g.cameraPos.y === 0) {
+        g.cameraPos.x = targetCx;
+        g.cameraPos.y = targetCy;
+      } else {
+        const camFactor = 1 - Math.exp(-14 * (g.t ? 0.016 : 0.016));
+        g.cameraPos.x = lerp(g.cameraPos.x, targetCx, camFactor);
+        g.cameraPos.y = lerp(g.cameraPos.y, targetCy, camFactor);
+      }
+      cx = g.cameraPos.x;
+      cy = g.cameraPos.y;
     } else {
       scale = Math.min(cw / W, ch / H);
       ox = (cw - W * scale) / 2;

@@ -224,15 +224,16 @@ export const firebaseMultiplayer = {
     const roomData = roomSnap.data() as OnlineRoomData;
     const roomConfig = sanitizeConfig(roomData.config);
 
-    if (roomData.status === 'playing' && !params.isSpectator) {
-      throw new Error(`Pertandingan di room "${cleanCode}" sedang berlangsung. Anda bisa bergabung sebagai spektator.`);
-    }
-
     // Get current players
     const playersCol = collection(db, 'rooms', cleanCode, 'players');
     const playersSnap = await getDocs(playersCol);
     const existingPlayers: Player[] = [];
     playersSnap.forEach(d => existingPlayers.push(d.data() as Player));
+
+    const isExistingPlayer = existingPlayers.some(p => p.id === clientId);
+    if (roomData.status === 'playing' && !params.isSpectator && !isExistingPlayer) {
+      throw new Error(`Pertandingan di room "${cleanCode}" sedang berlangsung. Anda bisa bergabung sebagai spektator.`);
+    }
 
     let myPlayer = existingPlayers.find(p => p.id === clientId);
 
